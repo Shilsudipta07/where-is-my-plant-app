@@ -63,6 +63,10 @@ interface ExploreMapProps {
   isActive?: boolean;
 }
 
+// Default India Geographic Coordinates for initial overview (when no user GPS or species search)
+const DEFAULT_INDIA_CENTER = { lat: 20.5937, lng: 78.9629 };
+const DEFAULT_INDIA_ZOOM = 5;
+
 // Haversine distance in meters
 const getHaversineDistanceMeters = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
   const R = 6371000;
@@ -286,6 +290,8 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
   const radiusKmRef = useRef<RadiusKmOption>(10);
   const pendingNearbySearchRef = useRef<boolean>(false);
   const pendingNurserySearchRef = useRef<boolean>(false);
+  const appliedInitialKeyRef = useRef<string>('');
+  const hasUserPannedOrZoomedRef = useRef<boolean>(false);
 
   useEffect(() => {
     isFollowingRef.current = isFollowing;
@@ -425,7 +431,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
             <span class="w-2 h-2 rounded-full bg-white"></span>
           </span>
           <span class="absolute -bottom-5 whitespace-nowrap bg-blue-900/90 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow-xs pointer-events-none">
-            My Location
+            You are here
           </span>
         </div>
       `,
@@ -542,9 +548,11 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                 }
               }
 
-              // Center map: during live navigation, do not auto-pan on every GPS update so user can freely pan/inspect
+              // Center map on first fix only if user has not already manually panned/zoomed
               if (isFirstFix) {
-                map.setView([latitude, longitude], Math.max(map.getZoom(), 15), { animate: true });
+                if (!hasUserPannedOrZoomedRef.current) {
+                  map.setView([latitude, longitude], Math.max(map.getZoom(), 15), { animate: true });
+                }
                 isFirstFix = false;
               } else if (!isNavigatingRef.current && isFollowingRef.current) {
                 map.setView([latitude, longitude], Math.max(map.getZoom(), 15), { animate: true });
@@ -704,17 +712,27 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
     };
   }, [isActive, stopLocationTracking]);
 
-  // Trigger auto tracking if prop set
+  // When "Plants Near Me" or "Explore Map" opens, request the user's GPS location
   useEffect(() => {
-    if (autoStartTracking && isActive && !isTracking) {
-      startLocationTracking(true);
+    if (isActive && !isTracking && watchIdRef.current === null) {
+      const hasActiveSearch = Boolean(
+        (initialInatRecords && initialInatRecords.length > 0) ||
+        (initialGbifRecords && initialGbifRecords.length > 0) ||
+        initialInatSearch?.trim() ||
+        initialGbifSearch?.trim()
+      );
+      // Auto-center on first GPS fix only if user explicitly opened Plants Near Me (autoStartTracking)
+      // or opened fresh Explore Map without species search results
+      const centerOnFirst = Boolean(autoStartTracking || !hasActiveSearch);
+      startLocationTracking(centerOnFirst);
     }
-  }, [autoStartTracking, isActive, isTracking, startLocationTracking]);
+  }, [isActive, isTracking, autoStartTracking, initialInatRecords, initialGbifRecords, initialInatSearch, initialGbifSearch, startLocationTracking]);
 
   /**
    * Handle "Find Plants Near Me" button click (Requirement 3)
    */
   const handleFindPlantsNearMe = useCallback(() => {
+    hasUserPannedOrZoomedRef.current = false;
     setIsNearbyMode(true);
     setRadiusKm(10); // Start with 10 km search radius per Requirement 3
     radiusKmRef.current = 10;
@@ -793,6 +811,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
    * Re-center on Me button (Requirement 12)
    */
   const handleRecenterOnMe = useCallback(() => {
+    hasUserPannedOrZoomedRef.current = false;
     if (activeUserLocation && mapInstanceRef.current) {
       mapInstanceRef.current.setView(
         [activeUserLocation.lat, activeUserLocation.lng],
@@ -822,9 +841,9 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
   useEffect(() => {
     if (!mapContainerRef.current || mapInstanceRef.current) return;
 
-    const initialLat = activeUserLocation?.lat || DEMO_CAMPUS_CENTER.lat;
-    const initialLng = activeUserLocation?.lng || DEMO_CAMPUS_CENTER.lng;
-    const initialZoom = activeUserLocation ? 14 : 13;
+    const initialLat = activeUserLocation?.lat || DEFAULT_INDIA_CENTER.lat;
+    const initialLng = activeUserLocation?.lng || DEFAULT_INDIA_CENTER.lng;
+    const initialZoom = activeUserLocation ? 14 : DEFAULT_INDIA_ZOOM;
 
     const map = L.map(mapContainerRef.current, {
       center: [initialLat, initialLng],
@@ -865,7 +884,8 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
     nurseryMarkersLayerRef.current = L.layerGroup().addTo(map);
     routeLayerRef.current = L.layerGroup().addTo(map);
 
-    map.on('dragstart', () => {
+    map.on('dragstart zoomstart movestart', () => {
+      hasUserPannedOrZoomedRef.current = true;
       setIsFollowing(false);
     });
 
@@ -942,17 +962,39 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
 
   // Initial load: Only query observations if explicit initial records or search term was provided
   useEffect(() => {
+    const initialKey = initialInatTaxon?.id
+      ? `inat-taxon-${initialInatTaxon.id}`
+      : initialInatRecords && initialInatRecords.length > 0
+        ? `inat-records-${initialInatRecords[0].id || initialInatRecords[0].observationId}-${initialInatRecords.length}`
+        : initialGbifRecords && initialGbifRecords.length > 0
+          ? `gbif-records-${initialGbifRecords[0].id || initialGbifRecords[0].gbifKey}-${initialGbifRecords.length}`
+          : initialInatSearch?.trim()
+            ? `inat-search-${initialInatSearch.trim().toLowerCase()}`
+            : initialGbifSearch?.trim()
+              ? `gbif-search-${initialGbifSearch.trim().toLowerCase()}`
+              : '';
+
+    // If there is no explicit initial search/records or if this exact search view was already initialized,
+    // prevent re-fitting bounds or re-querying so user zoom/pan is never overridden.
+    if (!initialKey || appliedInitialKeyRef.current === initialKey) {
+      return;
+    }
+
+    const map = mapInstanceRef.current;
+    if (!map) {
+      return;
+    }
+
+    appliedInitialKeyRef.current = initialKey;
+
     if (initialInatRecords && initialInatRecords.length > 0) {
       setInatRecords(initialInatRecords);
       setActiveDataSource('real');
       if (initialInatTaxon) setInatTaxon(initialInatTaxon);
-      const map = mapInstanceRef.current;
-      if (map) {
-        const bounds = L.latLngBounds(
-          initialInatRecords.map((r) => [r.coordinates.lat, r.coordinates.lng] as [number, number])
-        );
-        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
-      }
+      const bounds = L.latLngBounds(
+        initialInatRecords.map((r) => [r.coordinates.lat, r.coordinates.lng] as [number, number])
+      );
+      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
     } else if (initialGbifRecords && initialGbifRecords.length > 0) {
       // Compatibility with GBIF records passed from SearchResultsView
       const mapped = initialGbifRecords.map((r) => ({
@@ -972,8 +1014,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
       }));
       setInatRecords(mapped);
       setActiveDataSource('real');
-      const map = mapInstanceRef.current;
-      if (map && mapped.length > 0) {
+      if (mapped.length > 0) {
         const bounds = L.latLngBounds(
           mapped.map((r) => [r.coordinates.lat, r.coordinates.lng] as [number, number])
         );
@@ -2459,7 +2500,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                     } else if (activeUserLocation) {
                       mapInstanceRef.current.setView([activeUserLocation.lat, activeUserLocation.lng], 15, { animate: true });
                     } else {
-                      mapInstanceRef.current.setView([DEMO_CAMPUS_CENTER.lat, DEMO_CAMPUS_CENTER.lng], 13, { animate: true });
+                      mapInstanceRef.current.setView([DEFAULT_INDIA_CENTER.lat, DEFAULT_INDIA_CENTER.lng], DEFAULT_INDIA_ZOOM, { animate: true });
                     }
                   }
                 }}
