@@ -1,0 +1,80 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(ownerUid) {
+      return isSignedIn() && request.auth.uid == ownerUid;
+    }
+
+    function isWebsiteOwner() {
+      return isSignedIn() && (
+        request.auth.uid == 'Ssyb5F9eskReAh6q86HpXtn3bBk1' ||
+        (exists(/databases/$(database)/documents/roles/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/roles/$(request.auth.uid)).data.role == 'owner')
+      );
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidUsernameFormat(name) {
+      return name is string && name.size() >= 3 && name.size() <= 20 && name.matches('^[a-zA-Z0-9_]+$');
+    }
+
+    function isValidNormalizedUsername(norm) {
+      return norm is string && norm.size() >= 3 && norm.size() <= 20 && norm.matches('^[a-z0-9_]+$');
+    }
+
+    // Plants collection
+    match /plants/{plantId} {
+      allow get, list: if true;
+      allow create: if isSignedIn();
+      allow update: if isSignedIn();
+      allow delete: if isWebsiteOwner() || isOwner(existing().ownerUid);
+    }
+
+    // Roles collection
+    match /roles/{userId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow list: if false;
+      allow create, update: if isOwner(userId);
+      allow delete: if false;
+    }
+
+    // Usernames unique reservation registry
+    match /usernames/{normalizedUsername} {
+      allow get: if isSignedIn();
+      allow list: if false;
+      allow create: if isSignedIn()
+        && incoming().uid == request.auth.uid
+        && isValidUsernameFormat(incoming().username)
+        && isValidNormalizedUsername(incoming().normalizedUsername)
+        && incoming().normalizedUsername == normalizedUsername;
+      allow update: if isSignedIn()
+        && incoming().uid == request.auth.uid
+        && (existing().uid == request.auth.uid);
+      allow delete: if isSignedIn() && existing().uid == request.auth.uid;
+    }
+
+    // Connectivity test document
+    match /test/{docId} {
+      allow get: if true;
+    }
+  }
+}
+

@@ -1,0 +1,6 @@
+{
+  "name": "WHERE IS MY PLANT",
+  "description": "A plant discovery website for students and nature lovers to find and explore real plant occurrences around them.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,164 @@
+{
+  "entities": {
+    "Plant": {
+      "title": "Plant",
+      "description": "Plant occurrence record submitted by users or cataloged for WHERE IS MY PLANT",
+      "type": "object",
+      "properties": {
+        "commonName": {
+          "type": "string",
+          "description": "Common name of the plant"
+        },
+        "scientificName": {
+          "type": "string",
+          "description": "Botanical scientific name"
+        },
+        "family": {
+          "type": "string",
+          "description": "Botanical family"
+        },
+        "category": {
+          "type": "string",
+          "description": "Plant category (Tree, Wildflower, Foliage, Herb, Succulent)"
+        },
+        "habitat": {
+          "type": "string",
+          "description": "Native habitat description"
+        },
+        "description": {
+          "type": "string",
+          "description": "Botanical description"
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "Photo URL"
+        },
+        "locationName": {
+          "type": "string",
+          "description": "Human readable location name"
+        },
+        "coordinates": {
+          "type": "object",
+          "description": "GPS coordinates of the occurrence"
+        },
+        "locationSource": {
+          "type": "string",
+          "description": "Source of coordinates (gps, map, or manual)",
+          "enum": ["gps", "map", "manual"]
+        },
+        "ownerUid": {
+          "type": "string",
+          "description": "Firebase UID of the user who submitted the observation"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Timestamp when record was created"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Timestamp when record was last updated"
+        }
+      },
+      "required": ["commonName", "scientificName", "locationName", "ownerUid"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User account profile for WHERE IS MY PLANT naturalists and students",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Authentication User UID",
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "description": "User Gmail or email address",
+          "maxLength": 320
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display name from Google Account",
+          "maxLength": 150
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "User profile avatar image URL",
+          "maxLength": 2000
+        },
+        "username": {
+          "type": "string",
+          "description": "Unique community botanical username (e.g. sudipta_shil)",
+          "minLength": 3,
+          "maxLength": 20,
+          "pattern": "^[a-zA-Z0-9_]{3,20}$"
+        },
+        "normalizedUsername": {
+          "type": "string",
+          "description": "Lowercase normalized unique username used as document key",
+          "minLength": 3,
+          "maxLength": 20,
+          "pattern": "^[a-z0-9_]{3,20}$"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Timestamp when user profile was created"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Timestamp when user profile was last updated"
+        }
+      },
+      "required": ["uid"]
+    },
+    "UsernameReservation": {
+      "title": "UsernameReservation",
+      "description": "Atomic reservation registry ensuring globally unique usernames in Firestore",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase UID of the reserving user",
+          "maxLength": 128
+        },
+        "username": {
+          "type": "string",
+          "description": "Original case-preserved username string",
+          "minLength": 3,
+          "maxLength": 20,
+          "pattern": "^[a-zA-Z0-9_]{3,20}$"
+        },
+        "normalizedUsername": {
+          "type": "string",
+          "description": "Lowercase normalized unique username matching the document ID",
+          "minLength": 3,
+          "maxLength": 20,
+          "pattern": "^[a-z0-9_]{3,20}$"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Timestamp when username was reserved"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Timestamp when username was last updated"
+        }
+      },
+      "required": ["uid", "username", "normalizedUsername"]
+    }
+  },
+  "firestore": {
+    "/plants/{plantId}": {
+      "schema": "Plant",
+      "description": "Collection of observed plants and community submissions with ownerUid access control"
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile documents strictly private to the authenticated owner"
+    },
+    "/usernames/{normalizedUsername}": {
+      "schema": "UsernameReservation",
+      "description": "Unique username registry documents with race-condition-safe ownership verification"
+    }
+  }
+}
