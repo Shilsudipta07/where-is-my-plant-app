@@ -2385,29 +2385,30 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               </button>
             </div>
 
-            {/* Active Road Route HUD Overlay (Compact UI) */}
+            {/* Active Road Route HUD Overlay (Compact on mobile, full on desktop) */}
             {activeRoute && (
-              <div className="absolute top-14 left-2 right-2 sm:left-auto sm:right-3 sm:max-w-xs md:max-w-sm z-[1000] bg-blue-900/95 backdrop-blur-md text-white px-2.5 py-1.5 sm:px-3 sm:py-2 rounded-xl shadow-lg border border-blue-400/30 flex items-center justify-between gap-2 animate-in slide-in-from-top-2 pointer-events-auto">
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-blue-600 flex items-center justify-center shrink-0 shadow-inner">
-                    <Navigation className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-white animate-pulse" />
+              <div className="absolute top-12 sm:top-14 left-2 right-2 sm:left-auto sm:right-3 sm:max-w-xs md:max-w-sm z-[1000] bg-blue-900/95 backdrop-blur-md text-white px-2 py-1 sm:px-3 sm:py-2 rounded-lg sm:rounded-xl shadow-lg border border-blue-400/30 flex items-center justify-between gap-1.5 sm:gap-2 animate-in slide-in-from-top-2 pointer-events-auto">
+                <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+                  <div className="hidden sm:flex w-7 h-7 rounded-lg bg-blue-600 items-center justify-center shrink-0 shadow-inner">
+                    <Navigation className="w-4 h-4 text-white animate-pulse" />
                   </div>
                   <div className="min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[9px] uppercase font-bold text-blue-200 tracking-wider leading-none">
-                        {isReroutingUI ? 'Recalculating...' : 'Live Navigation'}
+                    <div className="flex items-center gap-1 sm:gap-1.5 leading-none">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0 animate-ping" />
+                      <span className="text-[8.5px] sm:text-[9px] uppercase font-bold text-blue-200 tracking-wider whitespace-nowrap">
+                        {isReroutingUI ? 'Recalculating...' : 'Live Nav'}
                       </span>
-                      <span className="w-1 h-1 rounded-full bg-emerald-400 animate-ping" />
+                      <span className="text-blue-300/60 hidden sm:inline">•</span>
+                      <span className="text-[10px] sm:text-xs font-bold truncate text-white leading-tight max-w-[110px] xs:max-w-[150px] sm:max-w-[170px]">
+                        To: {activeRoute.destinationName}
+                      </span>
                     </div>
-                    <div className="text-[11px] sm:text-xs font-bold truncate text-white leading-tight mt-0.5 max-w-[130px] sm:max-w-[170px]">
-                      To: {activeRoute.destinationName}
-                    </div>
-                    <div className="text-[10px] sm:text-[11px] text-blue-100 flex items-center gap-1.5 leading-tight mt-0.5">
-                      <span className="font-semibold text-white">
+                    <div className="text-[9.5px] sm:text-[11px] text-blue-100 flex items-center gap-1 sm:gap-1.5 leading-tight mt-0.5">
+                      <span className="font-semibold text-white whitespace-nowrap">
                         📍 {formatRouteDistance(activeRoute.distanceMeters)}
                       </span>
                       <span>•</span>
-                      <span className="font-semibold text-white">
+                      <span className="font-semibold text-white whitespace-nowrap">
                         ⏱️ {formatRouteDuration(activeRoute.durationSeconds)}
                       </span>
                     </div>
@@ -2426,7 +2427,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                         );
                       }
                     }}
-                    className="px-2 py-1 bg-blue-800 hover:bg-blue-700 text-white rounded-md text-[10px] sm:text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap"
+                    className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-blue-800 hover:bg-blue-700 active:scale-95 text-white rounded text-[9px] sm:text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap"
                     title="Recenter map on your latest GPS location"
                   >
                     Recenter
@@ -2443,7 +2444,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                         }
                       }
                     }}
-                    className="px-2 py-1 bg-blue-800 hover:bg-blue-700 text-white rounded-md text-[10px] sm:text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap"
+                    className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-blue-800 hover:bg-blue-700 active:scale-95 text-white rounded text-[9px] sm:text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap"
                     title="Fit route on map"
                   >
                     Fit Route
@@ -2454,8 +2455,9 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                       e.stopPropagation();
                       handleClearRoute();
                     }}
-                    className="p-1 sm:px-1.5 bg-white/10 hover:bg-white/20 text-white rounded-md text-[10px] sm:text-xs transition-colors cursor-pointer font-bold leading-none"
+                    className="p-1 sm:px-1.5 bg-white/10 hover:bg-white/20 active:scale-95 text-white rounded text-[10px] sm:text-xs transition-colors cursor-pointer font-bold leading-none"
                     title="Exit Navigation"
+                    aria-label="Exit Navigation"
                   >
                     ✕
                   </button>
