@@ -69,6 +69,17 @@ export const AccountView: React.FC<AccountViewProps> = ({
   const [userPlantCount, setUserPlantCount] = useState<number>(0);
   const [isLoadingPlants, setIsLoadingPlants] = useState<boolean>(false);
 
+  const userPhotoURL =
+    authState.user?.photoURL ||
+    authState.user?.providerData?.find((p) => p.photoURL)?.photoURL ||
+    authState.profile?.photoURL ||
+    null;
+
+  const [photoError, setPhotoError] = useState(false);
+  useEffect(() => {
+    setPhotoError(false);
+  }, [userPhotoURL]);
+
   // Subscribe to auth state
   useEffect(() => {
     const unsubscribe = subscribeToAuth((state) => {
@@ -380,12 +391,13 @@ export const AccountView: React.FC<AccountViewProps> = ({
               <div className="flex flex-col sm:flex-row items-center sm:items-start gap-5 text-center sm:text-left">
                 {/* Profile Photo */}
                 <div className="relative">
-                  {authState.user?.photoURL ? (
+                  {userPhotoURL && !photoError ? (
                     <img
-                      src={authState.user.photoURL}
-                      alt={authState.user.displayName || 'Google Profile'}
+                      src={userPhotoURL}
+                      alt={authState.user?.displayName || 'Google Profile'}
                       className="w-20 h-20 rounded-2xl object-cover ring-4 ring-emerald-500/20 shadow-md border border-stone-200"
                       referrerPolicy="no-referrer"
+                      onError={() => setPhotoError(true)}
                     />
                   ) : (
                     <div className="w-20 h-20 rounded-2xl bg-emerald-900 text-white flex items-center justify-center text-2xl font-bold font-serif shadow-md">

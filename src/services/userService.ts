@@ -238,12 +238,16 @@ export async function getUserProfile(uid: string): Promise<UserProfile | null> {
  */
 export async function syncGoogleUserProfile(user: User): Promise<UserProfile> {
   const existingLocal = getLocalProfile(user.uid);
+  const providerPhoto = user.photoURL || user.providerData?.find((p) => p.photoURL)?.photoURL || null;
+  const effectivePhotoURL = providerPhoto || existingLocal?.photoURL || null;
+  const providerName = user.displayName || user.providerData?.find((p) => p.displayName)?.displayName || null;
+  const effectiveDisplayName = providerName || existingLocal?.displayName || null;
 
   const mergedProfile: UserProfile = {
     uid: user.uid,
     email: user.email || existingLocal?.email || null,
-    displayName: user.displayName || existingLocal?.displayName || null,
-    photoURL: user.photoURL || existingLocal?.photoURL || null,
+    displayName: effectiveDisplayName,
+    photoURL: effectivePhotoURL,
     username: existingLocal?.username || undefined,
     normalizedUsername: existingLocal?.normalizedUsername || undefined,
     createdAt: existingLocal?.createdAt || new Date().toISOString(),
@@ -260,8 +264,8 @@ export async function syncGoogleUserProfile(user: User): Promise<UserProfile> {
       const newProfile: Record<string, any> = {
         uid: user.uid,
         email: user.email || null,
-        displayName: user.displayName || null,
-        photoURL: user.photoURL || null,
+        displayName: effectiveDisplayName,
+        photoURL: effectivePhotoURL,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
@@ -275,8 +279,8 @@ export async function syncGoogleUserProfile(user: User): Promise<UserProfile> {
       const updatedData: Record<string, any> = {
         uid: user.uid,
         email: user.email || existing.email || null,
-        displayName: user.displayName || existing.displayName || null,
-        photoURL: user.photoURL || existing.photoURL || null,
+        displayName: effectiveDisplayName || existing.displayName || null,
+        photoURL: effectivePhotoURL || existing.photoURL || null,
         updatedAt: serverTimestamp(),
       };
 
@@ -322,11 +326,12 @@ export async function updateUsername(
   }
 
   // Construct updated profile
+  const providerPhoto = auth.currentUser?.photoURL || auth.currentUser?.providerData?.find((p) => p.photoURL)?.photoURL || currentProfile?.photoURL || null;
   const updatedProfile: UserProfile = {
     uid,
     email: auth.currentUser?.email || currentProfile?.email || null,
     displayName: auth.currentUser?.displayName || currentProfile?.displayName || null,
-    photoURL: auth.currentUser?.photoURL || currentProfile?.photoURL || null,
+    photoURL: providerPhoto,
     username: cleanUsername,
     normalizedUsername: normalized,
     createdAt: currentProfile?.createdAt || new Date().toISOString(),
@@ -384,7 +389,7 @@ export async function updateUsername(
           uid,
           email: auth.currentUser?.email || currentProfile?.email || null,
           displayName: auth.currentUser?.displayName || currentProfile?.displayName || null,
-          photoURL: auth.currentUser?.photoURL || currentProfile?.photoURL || null,
+          photoURL: providerPhoto,
           username: cleanUsername,
           normalizedUsername: normalized,
           updatedAt: serverTimestamp(),

@@ -167,6 +167,16 @@ export const Navbar: React.FC<NavbarProps> = ({
   const displayName = authState.profile?.username
     ? `@${authState.profile.username}`
     : authState.user?.displayName?.split(' ')[0] || 'Account';
+  const userPhotoURL =
+    authState.user?.photoURL ||
+    authState.user?.providerData?.find((p) => p.photoURL)?.photoURL ||
+    authState.profile?.photoURL ||
+    null;
+
+  const [photoError, setPhotoError] = useState(false);
+  useEffect(() => {
+    setPhotoError(false);
+  }, [userPhotoURL]);
 
   return (
     <header className="sticky top-0 z-40 bg-stone-50/95 backdrop-blur-md border-b border-stone-200">
@@ -267,12 +277,13 @@ export const Navbar: React.FC<NavbarProps> = ({
             >
               {isGoogleUser ? (
                 <>
-                  {authState.user?.photoURL ? (
+                  {userPhotoURL && !photoError ? (
                     <img
-                      src={authState.user.photoURL}
-                      alt={authState.user.displayName || 'Account'}
+                      src={userPhotoURL}
+                      alt={authState.user?.displayName || 'Account'}
                       className="w-5 h-5 rounded-full object-cover ring-1 ring-emerald-500"
                       referrerPolicy="no-referrer"
+                      onError={() => setPhotoError(true)}
                     />
                   ) : (
                     <div className="w-5 h-5 rounded-full bg-emerald-700 text-white flex items-center justify-center text-[10px] font-bold">
@@ -338,12 +349,13 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* Mobile Account Banner */}
           <div className="mb-2 p-3 rounded-2xl bg-stone-50 border border-stone-200 flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              {isGoogleUser && authState.user?.photoURL ? (
+              {isGoogleUser && userPhotoURL && !photoError ? (
                 <img
-                  src={authState.user.photoURL}
-                  alt={authState.user.displayName || 'Profile'}
+                  src={userPhotoURL}
+                  alt={authState.user?.displayName || 'Profile'}
                   className="w-9 h-9 rounded-xl object-cover ring-2 ring-emerald-500/20"
                   referrerPolicy="no-referrer"
+                  onError={() => setPhotoError(true)}
                 />
               ) : (
                 <div className="w-9 h-9 rounded-xl bg-emerald-800 text-white flex items-center justify-center font-bold text-xs">

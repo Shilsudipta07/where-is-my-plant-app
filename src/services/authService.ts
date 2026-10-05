@@ -17,6 +17,7 @@ import {
   signOut as fbSignOut,
   GoogleAuthProvider,
   onAuthStateChanged,
+  updateProfile,
   type User,
   type Unsubscribe,
 } from 'firebase/auth';
@@ -90,8 +91,14 @@ export async function initAuth(): Promise<AuthState> {
         let profile: UserProfile | null = null;
         if (!user.isAnonymous) {
           try {
+            const providerPhoto = user.photoURL || user.providerData?.find((p) => p.photoURL)?.photoURL || null;
+            if (!user.photoURL && providerPhoto) {
+              try {
+                await updateProfile(user, { photoURL: providerPhoto });
+              } catch {}
+            }
             profile = await getUserProfile(user.uid);
-            if (!profile) {
+            if (!profile || (providerPhoto && !profile.photoURL)) {
               profile = await syncGoogleUserProfile(user);
             }
           } catch (e) {
@@ -209,6 +216,12 @@ export async function signInWithGoogle(): Promise<{ user: User; linked: boolean 
     // Sync or create user profile document
     let profile: UserProfile | null = null;
     try {
+      const providerPhoto = resultUser.photoURL || resultUser.providerData?.find((p) => p.photoURL)?.photoURL || null;
+      if (!resultUser.photoURL && providerPhoto) {
+        try {
+          await updateProfile(resultUser, { photoURL: providerPhoto });
+        } catch {}
+      }
       profile = await syncGoogleUserProfile(resultUser);
     } catch (profileError) {
       console.warn('[AuthService] Failed to sync profile document:', profileError);
