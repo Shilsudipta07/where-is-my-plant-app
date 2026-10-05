@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://where-is-my-plant-bc671.web.app/sitemap.xml
