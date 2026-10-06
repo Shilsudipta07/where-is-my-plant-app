@@ -286,6 +286,8 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
   const watchIdRef = useRef<number | null>(null);
   const isFollowingRef = useRef<boolean>(false);
   const lastFixTimestampRef = useRef<number>(0);
+  const userStoppedTrackingRef = useRef<boolean>(false);
+  const hasAutoStartedTrackingRef = useRef<boolean>(false);
   const isNearbyModeRef = useRef<boolean>(false);
   const radiusKmRef = useRef<RadiusKmOption>(10);
   const pendingNearbySearchRef = useRef<boolean>(false);
@@ -311,12 +313,16 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
    * Stop continuous GPS location tracking safely
    */
   const stopLocationTracking = useCallback(() => {
+    userStoppedTrackingRef.current = true;
     if (watchIdRef.current !== null) {
       navigator.geolocation.clearWatch(watchIdRef.current);
       watchIdRef.current = null;
     }
     setIsTracking(false);
     setIsLocatingInternal(false);
+    setGpsAccuracy(null);
+    setIsFollowing(false);
+    isFollowingRef.current = false;
   }, []);
 
   /**
@@ -470,6 +476,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
    */
   const startLocationTracking = useCallback(
     (centerOnFirstFix: boolean = true) => {
+      userStoppedTrackingRef.current = false;
       if (!navigator.geolocation) {
         setInternalLocationError('Geolocation is not supported by your browser.');
         return;
@@ -554,8 +561,8 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                   map.setView([latitude, longitude], Math.max(map.getZoom(), 15), { animate: true });
                 }
                 isFirstFix = false;
-              } else if (!isNavigatingRef.current && isFollowingRef.current) {
-                map.setView([latitude, longitude], Math.max(map.getZoom(), 15), { animate: true });
+              } else if (isFollowingRef.current) {
+                map.setView([latitude, longitude], Math.max(map.getZoom(), 16), { animate: true });
               }
 
               // Live Navigation Tracking: ETA/distance calculation & off-route auto-rerouting
@@ -714,7 +721,13 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
 
   // When "Plants Near Me" or "Explore Map" opens, request the user's GPS location
   useEffect(() => {
-    if (isActive && !isTracking && watchIdRef.current === null) {
+    if (!isActive) {
+      hasAutoStartedTrackingRef.current = false;
+      userStoppedTrackingRef.current = false;
+      return;
+    }
+    if (!hasAutoStartedTrackingRef.current && !userStoppedTrackingRef.current && watchIdRef.current === null) {
+      hasAutoStartedTrackingRef.current = true;
       const hasActiveSearch = Boolean(
         (initialInatRecords && initialInatRecords.length > 0) ||
         (initialGbifRecords && initialGbifRecords.length > 0) ||
@@ -726,7 +739,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
       const centerOnFirst = Boolean(autoStartTracking || !hasActiveSearch);
       startLocationTracking(centerOnFirst);
     }
-  }, [isActive, isTracking, autoStartTracking, initialInatRecords, initialGbifRecords, initialInatSearch, initialGbifSearch, startLocationTracking]);
+  }, [isActive, autoStartTracking, initialInatRecords, initialGbifRecords, initialInatSearch, initialGbifSearch, startLocationTracking]);
 
   /**
    * Handle "Find Plants Near Me" button click (Requirement 3)
@@ -826,16 +839,23 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
   const handleToggleFollowMe = useCallback(() => {
     setIsFollowing((prev) => {
       const next = !prev;
-      if (next && activeUserLocation && mapInstanceRef.current) {
-        mapInstanceRef.current.setView(
-          [activeUserLocation.lat, activeUserLocation.lng],
-          Math.max(mapInstanceRef.current.getZoom(), 16),
-          { animate: true }
-        );
+      isFollowingRef.current = next;
+      if (next) {
+        hasUserPannedOrZoomedRef.current = false;
+        if (activeUserLocation && mapInstanceRef.current) {
+          mapInstanceRef.current.setView(
+            [activeUserLocation.lat, activeUserLocation.lng],
+            Math.max(mapInstanceRef.current.getZoom(), 16),
+            { animate: true }
+          );
+        } else if (!isTracking) {
+          userStoppedTrackingRef.current = false;
+          startLocationTracking(true);
+        }
       }
       return next;
     });
-  }, [activeUserLocation]);
+  }, [activeUserLocation, isTracking, startLocationTracking]);
 
   // Initialize Leaflet Map
   useEffect(() => {
@@ -884,9 +904,11 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
     nurseryMarkersLayerRef.current = L.layerGroup().addTo(map);
     routeLayerRef.current = L.layerGroup().addTo(map);
 
-    map.on('dragstart zoomstart movestart', () => {
+    // Only turn off Follow Me when the user manually drags/pans the map
+    map.on('dragstart', () => {
       hasUserPannedOrZoomedRef.current = true;
       setIsFollowing(false);
+      isFollowingRef.current = false;
     });
 
     mapInstanceRef.current = map;
