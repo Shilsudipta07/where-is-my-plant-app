@@ -2536,9 +2536,12 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               </button>
 
               {isTracking && (
-                <div className="bg-emerald-900/90 text-white px-2.5 py-1.5 rounded-xl border border-emerald-500/40 text-[11px] font-semibold flex items-center gap-1.5 shadow-xs backdrop-blur-xs">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                  <span>GPS Tracking {gpsAccuracy ? `(about ${Math.round(gpsAccuracy)}m)` : ''}</span>
+                <div
+                  className="bg-emerald-900/90 text-white px-1.5 py-0.5 rounded-lg border border-emerald-500/40 text-[9px] sm:text-[10px] font-semibold flex items-center gap-1 shadow-xs backdrop-blur-xs whitespace-nowrap"
+                  title={`Live GPS Active${gpsAccuracy ? ` (Accuracy: ±${Math.round(gpsAccuracy)}m)` : ''}`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
+                  <span>GPS{gpsAccuracy ? ` • ${Math.round(gpsAccuracy)}m` : ''}</span>
                 </div>
               )}
             </div>
