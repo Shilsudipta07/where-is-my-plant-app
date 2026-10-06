@@ -188,8 +188,14 @@ export const Navbar: React.FC<NavbarProps> = ({
             className="flex items-center gap-2 text-left cursor-pointer group shrink-0"
             aria-label="WHERE IS MY PLANT homepage"
           >
-            <span className="font-serif-display text-lg sm:text-xl font-bold tracking-tight text-emerald-950 group-hover:text-emerald-800 transition-colors">
-              WHERE IS MY PLANT 🌿
+            <span className="font-serif-display text-lg sm:text-xl font-bold tracking-tight text-emerald-950 group-hover:text-emerald-800 transition-colors flex items-center gap-1.5 sm:gap-2">
+              <span>WHERE IS MY PLANT</span>
+              <img
+                src="/IMG_20261006_191024.jpg"
+                alt="WHERE IS MY PLANT Logo"
+                className="w-6 h-auto sm:w-7 sm:h-auto object-contain shrink-0"
+                referrerPolicy="no-referrer"
+              />
             </span>
           </button>
 
