@@ -74,7 +74,7 @@ function parseOverpassElements(elements: any[], originLat: number, originLng: nu
     const openingHours = tags.opening_hours || undefined;
     const website = tags.website || tags['contact:website'] || undefined;
     const type: 'garden_centre' | 'plant_nursery' =
-      tags.landuse === 'plant_nursery' || tags.shop === 'plant_nursery'
+      tags.landuse === 'plant_nursery' || tags.shop === 'plant_nursery' || tags.shop === 'nursery'
         ? 'plant_nursery'
         : 'garden_centre';
     const distanceMeters = calculateDistanceMeters(originLat, originLng, itemLat, itemLng);
@@ -97,9 +97,9 @@ function parseOverpassElements(elements: any[], originLat: number, originLng: nu
 }
 
 const OVERPASS_ENDPOINTS = [
+  'https://overpass.maprva.org/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
   'https://overpass-api.de/api/interpreter',
-  'https://lz4.overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
 ];
 
 /**
@@ -111,7 +111,7 @@ async function fetchFromOverpassMirrors(
   lng: number,
   radiusMeters: number
 ): Promise<PlantNursery[]> {
-  const query = `[out:json][timeout:18];(nwr["shop"="garden_centre"](around:${radiusMeters},${lat},${lng});nwr["shop"="plant_nursery"](around:${radiusMeters},${lat},${lng});nwr["landuse"="plant_nursery"](around:${radiusMeters},${lat},${lng}););out center 40;`;
+  const query = `[out:json][timeout:20];(nw["shop"="garden_centre"](around:${radiusMeters},${lat},${lng});nw["shop"="plant_nursery"](around:${radiusMeters},${lat},${lng});nw["shop"="nursery"](around:${radiusMeters},${lat},${lng});nw["landuse"="plant_nursery"](around:${radiusMeters},${lat},${lng}););out center 40;`;
 
   for (const endpoint of OVERPASS_ENDPOINTS) {
     try {
@@ -122,7 +122,6 @@ async function fetchFromOverpassMirrors(
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
-          'Accept': 'application/json',
         },
         body: `data=${encodeURIComponent(query)}`,
         signal: controller.signal,
