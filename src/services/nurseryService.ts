@@ -111,7 +111,7 @@ async function fetchFromOverpassMirrors(
   lng: number,
   radiusMeters: number
 ): Promise<PlantNursery[]> {
-  const query = `[out:json][timeout:20];(nw["shop"="garden_centre"](around:${radiusMeters},${lat},${lng});nw["shop"="plant_nursery"](around:${radiusMeters},${lat},${lng});nw["shop"="nursery"](around:${radiusMeters},${lat},${lng});nw["landuse"="plant_nursery"](around:${radiusMeters},${lat},${lng}););out center 40;`;
+  const query = `[out:json][timeout:20];(nw["landuse"="plant_nursery"](around:${radiusMeters},${lat},${lng});nw["shop"="garden_centre"](around:${radiusMeters},${lat},${lng});nw["shop"="plant_nursery"](around:${radiusMeters},${lat},${lng});nw["shop"="nursery"](around:${radiusMeters},${lat},${lng}););out center 40;`;
 
   for (const endpoint of OVERPASS_ENDPOINTS) {
     try {
