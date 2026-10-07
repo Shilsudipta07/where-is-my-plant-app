@@ -4,8 +4,17 @@ import path from 'path';
 import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
+  const geoapifyKey = (
+    process.env.VITE_GEOAPIFY_API_KEY ||
+    process.env.GEOAPIFY_API_KEY ||
+    ''
+  ).trim().replace(/^["']|["']$/g, '');
+
   return {
     plugins: [react(), tailwindcss()],
+    define: {
+      'import.meta.env.VITE_GEOAPIFY_API_KEY': JSON.stringify(geoapifyKey),
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

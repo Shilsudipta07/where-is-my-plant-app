@@ -666,7 +666,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                   }
                 })
                 .catch(() => {
-                  setNurseryNotice('Unable to reach OpenStreetMap nursery service at this moment. Please check back shortly.');
+                  setNurseryNotice('Unable to reach nursery directory service at this moment. Please check back shortly.');
                 })
                 .finally(() => setIsLoadingNurseries(false));
             }
@@ -799,7 +799,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               }
             })
             .catch(() => {
-              setNurseryNotice('Unable to reach OpenStreetMap nursery service at this moment. Please check back shortly.');
+              setNurseryNotice('Unable to reach nursery directory service at this moment. Please check back shortly.');
             })
             .finally(() => setIsLoadingNurseries(false));
         }
@@ -1420,10 +1420,16 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
           <div class="flex items-center justify-between gap-1 mb-2">
             <span class="text-[10px] uppercase font-bold tracking-wider text-emerald-900 bg-emerald-100 px-2 py-0.5 rounded border border-emerald-200 flex items-center gap-1">
               <span>🪴</span>
-              ${nursery.type === 'garden_centre' ? 'Garden Centre' : 'Plant Nursery'}
+              ${
+                nursery.type === 'garden_centre'
+                  ? 'Garden Centre'
+                  : nursery.type === 'plant_shop'
+                  ? 'Plant & Flower Shop'
+                  : 'Plant Nursery'
+              }
             </span>
             <span class="text-[10px] text-stone-700 font-semibold">
-              OpenStreetMap POI
+              Verified POI
             </span>
           </div>
 
@@ -1558,7 +1564,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
       }
     } catch (_err) {
       // Graceful error notification without triggering an unhandled console.error
-      setNurseryNotice('Unable to reach OpenStreetMap nursery service at this moment. Please check back shortly.');
+      setNurseryNotice('Unable to reach nursery directory service at this moment. Please check back shortly.');
     } finally {
       setIsLoadingNurseries(false);
     }
@@ -2927,14 +2933,22 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                   <div className="flex items-center justify-between gap-1 mb-2">
                     <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 uppercase tracking-wider flex items-center gap-1">
                       <span>🪴</span>
-                      {activeItem.nursery.type === 'garden_centre' ? 'Garden Centre & Nursery' : 'Plant Nursery'}
+                      {activeItem.nursery.type === 'garden_centre'
+                        ? 'Garden Centre & Nursery'
+                        : activeItem.nursery.type === 'plant_shop'
+                        ? 'Plant & Flower Shop'
+                        : 'Plant Nursery'}
                     </span>
                     <span className="text-[10px] font-medium text-stone-500">
-                      OpenStreetMap POI
+                      Verified POI
                     </span>
                   </div>
 
-                  <div className="text-xs text-stone-400 font-medium">Plant Nursery & Garden Supplies:</div>
+                  <div className="text-xs text-stone-400 font-medium">
+                    {activeItem.nursery.type === 'plant_shop'
+                      ? 'Plant & Flower Supplies:'
+                      : 'Plant Nursery & Garden Supplies:'}
+                  </div>
                   <h3 className="font-serif-display text-xl font-bold text-stone-900 leading-snug">
                     {activeItem.nursery.name}
                   </h3>
@@ -2991,7 +3005,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                   </div>
 
                   <div className="mt-3 p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-900 leading-snug">
-                    ℹ️ <strong>OpenPOI Data:</strong> Verified local plant nursery and garden supply point from OpenStreetMap.
+                    ℹ️ <strong>Verified POI:</strong> Real local plant nursery and botanical supply point.
                   </div>
                 </div>
 

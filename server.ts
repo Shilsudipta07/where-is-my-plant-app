@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import dns from 'node:dns';
 dns.setDefaultResultOrder('ipv4first');
 
@@ -20,13 +21,66 @@ function calculateDistanceMeters(lat1: number, lon1: number, lat2: number, lon2:
   return Math.round(R * c);
 }
 
+// Parse Geoapify Places API features into nursery objects
+function parseGeoapifyFeatures(features: any[], originLat: number, originLng: number) {
+  const results = [];
+  const seenCoords = new Set<string>();
+
+  for (const feature of features) {
+    const props = feature.properties || {};
+    const geom = feature.geometry || {};
+    const itemLat = typeof props.lat === 'number' ? props.lat : geom.coordinates?.[1];
+    const itemLng = typeof props.lon === 'number' ? props.lon : geom.coordinates?.[0];
+
+    if (itemLat == null || itemLng == null || isNaN(itemLat) || isNaN(itemLng)) continue;
+
+    const coordKey = `${Number(itemLat).toFixed(4)},${Number(itemLng).toFixed(4)}`;
+    if (seenCoords.has(coordKey)) continue;
+    seenCoords.add(coordKey);
+
+    const categories: string[] = Array.isArray(props.categories) ? props.categories : [];
+    const isGardenCentre = categories.some((c: string) => c.includes('garden_centre'));
+
+    // commercial.garden_centre -> garden_centre; commercial.florist -> plant_shop
+    const type = isGardenCentre ? 'garden_centre' : 'plant_shop';
+    const defaultName = isGardenCentre ? 'Garden Centre & Nursery' : 'Plant & Flower Shop';
+    const name = props.name || props.address_line1 || defaultName;
+
+    const address = props.formatted || props.address_line2 || undefined;
+    const phone = props.contact?.phone || props.phone || undefined;
+    const openingHours = props.opening_hours || undefined;
+    const website = props.website || props.contact?.url || undefined;
+    const distanceMeters =
+      typeof props.distance === 'number'
+        ? Math.round(props.distance)
+        : calculateDistanceMeters(originLat, originLng, itemLat, itemLng);
+
+    const placeId = props.place_id || `geoapify-${itemLat}-${itemLng}`;
+
+    results.push({
+      id: `geo-${placeId}`,
+      name,
+      coordinates: { lat: itemLat, lng: itemLng },
+      address,
+      phone,
+      openingHours,
+      website,
+      type,
+      distanceMeters,
+    });
+  }
+
+  results.sort((a, b) => (a.distanceMeters || 0) - (b.distanceMeters || 0));
+  return results;
+}
+
 async function startServer() {
   const app = express();
   const PORT = parseInt(process.env.PORT || '3000', 10);
 
   app.use(express.json());
 
-  // API endpoint for nearby plant nurseries using verified OpenStreetMap Overpass
+  // API endpoint for nearby plant nurseries
   app.get('/api/nurseries', async (req, res) => {
     const lat = parseFloat(req.query.lat as string);
     const lng = parseFloat(req.query.lng as string);
@@ -37,17 +91,44 @@ async function startServer() {
     }
 
     const clampedRadius = Math.max(1000, Math.min(radiusMeters, 50000));
-    const query = `[out:json][timeout:18];(nwr["shop"="garden_centre"](around:${clampedRadius},${lat},${lng});nwr["shop"="plant_nursery"](around:${clampedRadius},${lat},${lng});nwr["landuse"="plant_nursery"](around:${clampedRadius},${lat},${lng}););out center 40;`;
+
+    // 1. Try Geoapify Places API if key is available in environment
+    const geoapifyKey = (process.env.VITE_GEOAPIFY_API_KEY || process.env.GEOAPIFY_API_KEY || '').trim();
+    if (geoapifyKey && geoapifyKey !== 'MY_GEOAPIFY_API_KEY') {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+        const geoUrl = `https://api.geoapify.com/v2/places?categories=commercial.garden_centre,commercial.florist&filter=circle:${encodeURIComponent(lng)},${encodeURIComponent(lat)},${encodeURIComponent(clampedRadius)}&bias=proximity:${encodeURIComponent(lng)},${encodeURIComponent(lat)}&limit=50&apiKey=${encodeURIComponent(geoapifyKey)}`;
+
+        const geoRes = await fetch(geoUrl, { signal: controller.signal });
+        clearTimeout(timeoutId);
+
+        if (geoRes.ok) {
+          const geoData = await geoRes.json();
+          if (geoData && Array.isArray(geoData.features) && geoData.features.length > 0) {
+            const nurseries = parseGeoapifyFeatures(geoData.features, lat, lng);
+            return res.json({ nurseries });
+          }
+        }
+      } catch (_geoErr) {
+        // Fall through to Overpass
+      }
+    }
+
+    // 2. OpenStreetMap Overpass query using verified endpoints
+    const query = `[out:json][timeout:20];(nw["landuse"="plant_nursery"](around:${clampedRadius},${lat},${lng});nw["shop"="garden_centre"](around:${clampedRadius},${lat},${lng});nw["shop"="plant_nursery"](around:${clampedRadius},${lat},${lng});nw["shop"="nursery"](around:${clampedRadius},${lat},${lng}););out center 40;`;
 
     const endpoints = [
+      'https://overpass.maprva.org/api/interpreter',
+      'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
       'https://overpass-api.de/api/interpreter',
-      'https://lz4.overpass-api.de/api/interpreter',
     ];
 
     for (const endpoint of endpoints) {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 20000);
+        const timeoutId = setTimeout(() => controller.abort(), 15000);
 
         const response = await fetch(endpoint, {
           method: 'POST',
@@ -105,7 +186,7 @@ async function startServer() {
           const phone = tags.phone || tags['contact:phone'] || undefined;
           const openingHours = tags.opening_hours || undefined;
           const website = tags.website || tags['contact:website'] || undefined;
-          const type = (tags.landuse === 'plant_nursery' || tags.shop === 'plant_nursery') ? 'plant_nursery' : 'garden_centre';
+          const type = (tags.landuse === 'plant_nursery' || tags.shop === 'plant_nursery' || tags.shop === 'nursery') ? 'plant_nursery' : 'garden_centre';
           const distanceMeters = calculateDistanceMeters(lat, lng, itemLat, itemLng);
 
           results.push({
@@ -123,7 +204,7 @@ async function startServer() {
 
         results.sort((a, b) => (a.distanceMeters || 0) - (b.distanceMeters || 0));
         return res.json({ nurseries: results });
-      } catch (err) {
+      } catch (_err) {
         // Fall back to next endpoint
       }
     }
