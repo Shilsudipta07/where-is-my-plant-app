@@ -99,10 +99,10 @@ export const Navbar: React.FC<NavbarProps> = ({
       description: 'Morphological identification keys & guides',
     },
     {
-      id: 'add',
-      label: 'Submit a Plant',
-      icon: PlusCircle,
-      description: 'Submit a new plant observation with GPS',
+      id: 'about',
+      label: 'About',
+      icon: BookOpen,
+      description: 'Project mission & student naturalists',
     },
     {
       id: 'my-observations',
@@ -111,10 +111,10 @@ export const Navbar: React.FC<NavbarProps> = ({
       description: 'Manage your uploaded plant observations',
     },
     {
-      id: 'about',
-      label: 'About',
-      icon: BookOpen,
-      description: 'Project mission & student naturalists',
+      id: 'add',
+      label: 'Submit a Plant',
+      icon: PlusCircle,
+      description: 'Submit a new plant observation with GPS',
     },
   ];
 
@@ -235,9 +235,9 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* Medium Screen / Compact Tablet Bar */}
           <nav
             aria-label="Tablet Navigation"
-            className="hidden md:flex xl:hidden items-center gap-1 text-[11px] font-medium text-stone-700"
+            className="hidden md:flex xl:hidden items-center gap-1 text-[11px] font-medium text-stone-700 overflow-x-auto"
           >
-            {navItems.slice(0, 6).map((item) => {
+            {navItems.map((item) => {
               const active = isItemActive(item.id);
               const Icon = item.icon;
               return (
@@ -351,7 +351,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* Mobile Drawer / Slide-Out Menu */}
       {mobileMenuOpen && (
-        <div className="md:hidden border-t border-stone-200 bg-white/98 backdrop-blur-md px-4 pt-3 pb-6 space-y-1.5 shadow-xl animate-in slide-in-from-top-2 duration-150">
+        <div className="md:hidden border-t border-stone-200 bg-white/98 backdrop-blur-md px-4 pt-3 pb-6 space-y-1.5 shadow-xl animate-in slide-in-from-top-2 duration-150 max-h-[calc(100vh-4.5rem)] overflow-y-auto">
           {/* Mobile Account Banner */}
           <div className="mb-2 p-3 rounded-2xl bg-stone-50 border border-stone-200 flex items-center justify-between">
             <div className="flex items-center gap-2.5">

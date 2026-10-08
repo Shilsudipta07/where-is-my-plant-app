@@ -3,6 +3,7 @@ import { Plant } from '../types/plant';
 import { X, Plus, Upload, CheckCircle, Sparkles, Loader2, AlertCircle } from 'lucide-react';
 import lavenderImg from '../assets/images/plant_lavender_wildflower_1790167109212.jpg';
 import { addPlantToFirestore } from '../services/firestoreService';
+import { compressImageFile } from '../utils/imageUtils';
 
 interface AddPlantModalProps {
   isOpen: boolean;
@@ -36,16 +37,29 @@ export const AddPlantModal: React.FC<AddPlantModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file && file.type.startsWith('image/')) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          setPreviewImage(event.target.result as string);
-        }
-      };
-      reader.readAsDataURL(file);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+    if (file) {
+      if (!file.type.startsWith('image/')) {
+        setErrorMessage('Please upload a valid image file (JPEG, PNG, WebP).');
+        return;
+      }
+      try {
+        const compressed = await compressImageFile(file, {
+          maxWidth: 1080,
+          maxHeight: 1080,
+          quality: 0.8,
+          maxBytes: 700 * 1024,
+        });
+        setPreviewImage(compressed);
+        setErrorMessage(null);
+      } catch (err: any) {
+        const msg = err?.message || 'Failed to compress plant photo. Please choose a different photo.';
+        setErrorMessage(msg);
+      }
     }
   };
 
@@ -71,6 +85,11 @@ export const AddPlantModal: React.FC<AddPlantModalProps> = ({
       return;
     }
 
+    if (previewImage && previewImage.length > 700 * 1024) {
+      setErrorMessage('Plant photo data exceeds 700 KB. Please upload a smaller compressed image.');
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {
@@ -80,20 +99,16 @@ export const AddPlantModal: React.FC<AddPlantModalProps> = ({
 
       const plantData: Omit<Plant, 'id'> = {
         commonName: cleanCommonName,
-        scientificName: scientificName.trim() || 'Species not yet identified',
-        family: family.trim() || 'Plantae',
+        scientificName: scientificName.trim(),
+        family: family.trim(),
         category,
         habitat: habitat.trim() || 'Campus Nature Trail',
         bloomSeason: 'Spring / Summer',
         sunExposure,
         waterNeeds,
         difficulty,
-        studentTip:
-          studentTip.trim() ||
-          'Observed in field study; verify leaf arrangement and flower parts with herbarium records.',
-        description:
-          description.trim() ||
-          `Botanical specimen recorded by a student naturalist at ${locationName || 'the campus study trail'}.`,
+        studentTip: studentTip.trim(),
+        description: description.trim(),
         identificationKeys: {
           leafShape: 'Characteristic field morphology recorded in notes',
           leafArrangement: 'Observed along stem',

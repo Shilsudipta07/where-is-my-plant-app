@@ -252,7 +252,7 @@ export async function fetchNearbyPlantNurseries(
   // 1. Try server-side proxy route first (active during Node/Express dev & full-stack deployment)
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000);
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
 
     const res = await fetch(
       `/api/nurseries?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}&radius=${encodeURIComponent(clampedRadius)}`,
@@ -266,6 +266,8 @@ export async function fetchNearbyPlantNurseries(
       if (data && Array.isArray(data.nurseries) && data.nurseries.length > 0) {
         return data.nurseries;
       }
+      // Note: If /api/nurseries returns 200 with 0 nurseries ([]),
+      // we DO NOT stop; we continue directly to client-side Geoapify.
     }
   } catch (_proxyErr) {
     // Falls through to client API fallback

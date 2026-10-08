@@ -36,6 +36,7 @@ import {
   AuthState,
   isFirebaseAuthenticated,
 } from '../services/authService';
+import { compressImageFile } from '../utils/imageUtils';
 
 interface SubmitPlantPageProps {
   onBackToHome: () => void;
@@ -74,6 +75,8 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
   const [description, setDescription] = useState('');
   const [studentTip, setStudentTip] = useState('');
   const [previewImage, setPreviewImage] = useState<string>(lavenderImg);
+  const [hasCustomPhoto, setHasCustomPhoto] = useState<boolean>(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
 
   // Location Selection State (GPS, Interactive Map, Manual Coordinates)
   const defaultLat = userLocation?.lat ? userLocation.lat.toFixed(6) : '24.0988';
@@ -406,16 +409,37 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
     }
   };
 
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file && file.type.startsWith('image/')) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          setPreviewImage(event.target.result as string);
-        }
-      };
-      reader.readAsDataURL(file);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+    if (file) {
+      if (!file.type.startsWith('image/')) {
+        const errorMsg = 'Please upload a valid image file (JPEG, PNG, WebP).';
+        setPhotoError(errorMsg);
+        setSubmitError(errorMsg);
+        setHasCustomPhoto(false);
+        return;
+      }
+      try {
+        const compressed = await compressImageFile(file, {
+          maxWidth: 1080,
+          maxHeight: 1080,
+          quality: 0.8,
+          maxBytes: 700 * 1024,
+        });
+        setPreviewImage(compressed);
+        setHasCustomPhoto(true);
+        setPhotoError(null);
+        setSubmitError(null);
+      } catch (err: any) {
+        // Clear photo input and show clear error - NEVER save oversized image
+        const errorMsg = err?.message || 'Failed to compress plant photo. Please try a different photo.';
+        setPhotoError(errorMsg);
+        setSubmitError(errorMsg);
+        setHasCustomPhoto(false);
+      }
     }
   };
 
@@ -432,6 +456,8 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
     setGpsSuccess(false);
     setGpsError(null);
     setPreviewImage(lavenderImg);
+    setHasCustomPhoto(false);
+    setPhotoError(null);
     setSubmitError(null);
     const parsedLat = parseFloat(defaultLat);
     const parsedLng = parseFloat(defaultLng);
@@ -445,16 +471,27 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
     e.preventDefault();
     setSubmitError(null);
 
+    // Required fields: Only Plant Photo, Plant Name, Location Name, Latitude, and Longitude
+    if (!hasCustomPhoto) {
+      setSubmitError('Please upload a plant photo before submitting.');
+      return;
+    }
+
+    if (!previewImage || previewImage.length > 700 * 1024) {
+      setSubmitError('Plant photo data exceeds 700 KB limit. Please choose a photo that compresses under 700 KB.');
+      return;
+    }
+
     const cleanCommonName = commonName.trim();
     const cleanLocationName = locationName.trim();
 
     if (!cleanCommonName) {
-      setSubmitError('Please provide a common name for the plant observation.');
+      setSubmitError('Please provide a Plant Name.');
       return;
     }
 
     if (!cleanLocationName) {
-      setSubmitError('Please provide a Location Name (e.g. "Berhampore" or "Campus Arboretum - North Quad").');
+      setSubmitError('Please provide a Location Name (e.g. "Berhampore" or "Campus Arboretum").');
       return;
     }
 
@@ -483,18 +520,16 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
 
       const plantData: Omit<Plant, 'id'> = {
         commonName: cleanCommonName,
-        scientificName: scientificName.trim() || 'Species not yet identified',
-        family: family.trim() || 'Botanical Specimen',
+        scientificName: scientificName.trim(),
+        family: family.trim(),
         category,
         habitat: 'Field Botanical Observation',
         bloomSeason: 'Current Season Observation',
         sunExposure: 'Full Sun',
         waterNeeds: 'Moderate',
         difficulty: 'Beginner',
-        studentTip: studentTip.trim() || 'Student field sighting record submitted via form.',
-        description:
-          description.trim() ||
-          `Fresh specimen observation recorded at ${cleanLocationName}. Documented as part of field biology study.`,
+        studentTip: studentTip.trim(),
+        description: description.trim(),
         identificationKeys: {
           leafShape: 'Field botanical observation record',
           leafArrangement: 'Observed in field study',
@@ -765,7 +800,7 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
               {/* Photo Upload Section */}
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wider text-stone-700 mb-2">
-                  Plant Photo
+                  Plant Photo <span className="text-emerald-700">*</span>
                 </label>
                 <div className="flex flex-col sm:flex-row items-center gap-5 p-4 rounded-2xl border-2 border-dashed border-stone-200 bg-stone-50/50">
                   <div className="relative w-36 h-28 sm:w-44 sm:h-32 rounded-xl overflow-hidden bg-stone-200 border border-stone-300 shrink-0 shadow-2xs">
@@ -774,6 +809,11 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
                       alt="Plant preview"
                       className="w-full h-full object-cover"
                     />
+                    {hasCustomPhoto && (
+                      <span className="absolute bottom-1.5 right-1.5 bg-emerald-800 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow">
+                        Ready (&lt; 700KB)
+                      </span>
+                    )}
                   </div>
 
                   <div className="space-y-2 text-center sm:text-left flex-1">
@@ -788,7 +828,7 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
                         className="inline-flex items-center gap-1.5 px-4 py-2 bg-white border border-stone-300 hover:border-emerald-600 hover:text-emerald-900 text-stone-700 text-xs font-semibold rounded-xl shadow-2xs transition-all cursor-pointer disabled:opacity-50"
                       >
                         <Upload className="w-3.5 h-3.5" />
-                        <span>Upload Plant Photo</span>
+                        <span>{hasCustomPhoto ? 'Change Plant Photo' : 'Upload Plant Photo'}</span>
                       </button>
                       <input
                         ref={fileInputRef}
@@ -797,8 +837,14 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
                         onChange={handlePhotoUpload}
                         className="hidden"
                       />
-                      <span className="text-[11px] text-stone-400">JPG, PNG or WEBP</span>
+                      <span className="text-[11px] text-stone-400">Auto-compressed below 700 KB</span>
                     </div>
+                    {photoError && (
+                      <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2 text-left">
+                        <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                        <span>{photoError}</span>
+                      </div>
+                    )}
                     <p className="text-[11px] text-stone-500">
                       Tip: A clear photograph showing leaves or flowers helps with verification.
                     </p>
@@ -842,7 +888,7 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-bold uppercase tracking-wider text-stone-700 mb-1.5">
-                    Category
+                    Category <span className="text-stone-400 text-[10px] font-normal">(Optional)</span>
                   </label>
                   <select
                     value={category}
@@ -1081,7 +1127,7 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
               {/* Description */}
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wider text-stone-700 mb-1.5">
-                  Short Description
+                  Short Description <span className="text-stone-400 text-[10px] font-normal">(Optional)</span>
                 </label>
                 <textarea
                   rows={3}

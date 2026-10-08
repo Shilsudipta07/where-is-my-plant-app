@@ -13,6 +13,7 @@ import {
 import lavenderImg from '../assets/images/plant_lavender_wildflower_1790167109212.jpg';
 import { DEMO_CAMPUS_CENTER } from '../data/samplePlants';
 import { addPlantToFirestore } from '../services/firestoreService';
+import { compressImageFile } from '../utils/imageUtils';
 
 interface AddPlantPageProps {
   onAddPlant: (newPlant: Plant) => void;
@@ -42,16 +43,29 @@ export const AddPlantPage: React.FC<AddPlantPageProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file && file.type.startsWith('image/')) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          setPreviewImage(event.target.result as string);
-        }
-      };
-      reader.readAsDataURL(file);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+    if (file) {
+      if (!file.type.startsWith('image/')) {
+        setErrorMessage('Please upload a valid image file (JPEG, PNG, WebP).');
+        return;
+      }
+      try {
+        const compressed = await compressImageFile(file, {
+          maxWidth: 1080,
+          maxHeight: 1080,
+          quality: 0.8,
+          maxBytes: 700 * 1024,
+        });
+        setPreviewImage(compressed);
+        setErrorMessage(null);
+      } catch (err: any) {
+        const msg = err?.message || 'Failed to compress plant photo. Please choose a different photo.';
+        setErrorMessage(msg);
+      }
     }
   };
 

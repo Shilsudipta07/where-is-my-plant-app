@@ -169,6 +169,9 @@ export async function addPlantToFirestore(
   const path = PLANTS_COLLECTION;
   const ownerUid = explicitOwnerUid || auth.currentUser?.uid || getCurrentUid();
 
+  if (!plantData.imageUrl || !plantData.imageUrl.trim()) {
+    throw new Error('Validation failed: Plant Photo is required.');
+  }
   if (!plantData.commonName?.trim()) {
     throw new Error('Validation failed: commonName is required.');
   }
@@ -190,6 +193,11 @@ export async function addPlantToFirestore(
   }
   if (!ownerUid) {
     throw new Error('Authentication required: A valid user UID is required to save observation.');
+  }
+
+  // Safety guard against Firestore document limits (strictly below 700 KB)
+  if (plantData.imageUrl && plantData.imageUrl.length > 700 * 1024) {
+    throw new Error('Photograph data size exceeds 700 KB limit. Please use compressed images.');
   }
 
   try {
@@ -253,6 +261,10 @@ export async function updatePlantInFirestore(
     delete cleanUpdate.id;
     delete cleanUpdate.ownerUid;
     delete cleanUpdate.createdAt;
+
+    if (cleanUpdate.imageUrl && cleanUpdate.imageUrl.length > 700 * 1024) {
+      throw new Error('Photograph data size exceeds 700 KB limit. Please use compressed images.');
+    }
 
     // Remove any undefined values
     Object.keys(cleanUpdate).forEach((key) => {
