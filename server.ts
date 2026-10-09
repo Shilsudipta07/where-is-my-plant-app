@@ -212,6 +212,53 @@ async function startServer() {
     return res.json({ nurseries: [] });
   });
 
+  // Dedicated route for sitemap.xml ensuring valid XML Content-Type and HTTP 200
+  app.get('/sitemap.xml', (_req, res) => {
+    const sitemapDist = path.resolve(process.cwd(), 'dist', 'sitemap.xml');
+    const sitemapPublic = path.resolve(process.cwd(), 'public', 'sitemap.xml');
+    const targetFile = process.env.NODE_ENV === 'production' ? sitemapDist : sitemapPublic;
+
+    res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=3600, s-maxage=3600');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+
+    res.sendFile(targetFile, (err) => {
+      if (err) {
+        // Fallback to public directory if dist is not yet built
+        res.sendFile(sitemapPublic, (fallbackErr) => {
+          if (fallbackErr) {
+            res.status(500).type('text/plain').send('Sitemap not found');
+          }
+        });
+      }
+    });
+  });
+
+  // Dedicated route for robots.txt ensuring text/plain Content-Type and HTTP 200
+  app.get('/robots.txt', (_req, res) => {
+    const robotsDist = path.resolve(process.cwd(), 'dist', 'robots.txt');
+    const robotsPublic = path.resolve(process.cwd(), 'public', 'robots.txt');
+    const targetFile = process.env.NODE_ENV === 'production' ? robotsDist : robotsPublic;
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=3600, s-maxage=3600');
+
+    res.sendFile(targetFile, (err) => {
+      if (err) {
+        res.sendFile(robotsPublic, (fallbackErr) => {
+          if (fallbackErr) {
+            res.status(500).type('text/plain').send('Robots.txt not found');
+          }
+        });
+      }
+    });
+  });
+
+  // Redirect /sitemap and trailing-slash variations to /sitemap.xml
+  app.get(['/sitemap', '/sitemap/', '/sitemap.xml/'], (_req, res) => {
+    res.redirect(301, '/sitemap.xml');
+  });
+
   if (process.env.NODE_ENV === 'production') {
     app.use(express.static(path.resolve(process.cwd(), 'dist')));
     app.get('*', (req, res) => {
