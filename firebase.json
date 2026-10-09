@@ -19,11 +19,7 @@
           },
           {
             "key": "Cache-Control",
-            "value": "public, max-age=3600, s-maxage=3600"
-          },
-          {
-            "key": "X-Content-Type-Options",
-            "value": "nosniff"
+            "value": "public, max-age=3600"
           }
         ]
       },
@@ -36,26 +32,9 @@
           },
           {
             "key": "Cache-Control",
-            "value": "public, max-age=3600, s-maxage=3600"
+            "value": "public, max-age=3600"
           }
         ]
-      }
-    ],
-    "redirects": [
-      {
-        "source": "/sitemap",
-        "destination": "/sitemap.xml",
-        "type": 301
-      },
-      {
-        "source": "/sitemap/",
-        "destination": "/sitemap.xml",
-        "type": 301
-      },
-      {
-        "source": "/sitemap.xml/",
-        "destination": "/sitemap.xml",
-        "type": 301
       }
     ],
     "rewrites": [
