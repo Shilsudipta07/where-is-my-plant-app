@@ -69,6 +69,10 @@ export const REQUIRED_DEMO_PLANTS: Plant[] = [
     coordinates: { lat: 37.7738, lng: -122.4222 },
     demoLocationDescription: 'Demo Spot: Beside environmental science sun dial',
     sightedCount: 52,
+    trunkDiameterCm: 32,
+    treeHeightM: 12.5,
+    treeAgeYears: 18,
+    measurementDate: '2026-09-15',
   },
   {
     id: 'mango',
@@ -94,6 +98,10 @@ export const REQUIRED_DEMO_PLANTS: Plant[] = [
     coordinates: { lat: 37.7766, lng: -122.4201 },
     demoLocationDescription: 'Demo Spot: Heritage tropical fruit grove, stand #12',
     sightedCount: 65,
+    trunkDiameterCm: 44,
+    treeHeightM: 14.0,
+    treeAgeYears: 25,
+    measurementDate: '2026-09-20',
   },
   {
     id: 'touch-me-not',
@@ -300,6 +308,10 @@ export const ADDITIONAL_PLANTS: Plant[] = [
     coordinates: { lat: 37.7735, lng: -122.4215 },
     demoLocationDescription: 'Demo Spot: Stand of three birches near the student science library path',
     sightedCount: 42,
+    trunkDiameterCm: 26,
+    treeHeightM: 11.0,
+    treeAgeYears: 14,
+    measurementDate: '2026-09-22',
   },
   {
     id: 'dryopteris-filix-mas',

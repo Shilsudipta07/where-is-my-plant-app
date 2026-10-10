@@ -15,6 +15,7 @@ import {
   User as UserIcon,
   ShieldCheck,
   AtSign,
+  TreeDeciduous,
 } from 'lucide-react';
 import { subscribeToAuth, AuthState, getCurrentUid } from '../services/authService';
 
@@ -31,6 +32,7 @@ export type NavItemKey =
   | 'search'
   | 'near-me'
   | 'identify'
+  | 'carbon'
   | 'add'
   | 'my-observations'
   | 'about'
@@ -99,6 +101,12 @@ export const Navbar: React.FC<NavbarProps> = ({
       description: 'Morphological identification keys & guides',
     },
     {
+      id: 'carbon',
+      label: 'Carbon Observatory',
+      icon: TreeDeciduous,
+      description: 'Campus tree carbon & CO₂e sequestration',
+    },
+    {
       id: 'about',
       label: 'About',
       icon: BookOpen,
@@ -124,6 +132,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     if (id === 'map') return activeTab === 'map' && !isNearMeActive;
     if (id === 'search') return activeTab === 'search' || activeTab === 'search-results';
     if (id === 'identify') return activeTab === 'identify';
+    if (id === 'carbon') return activeTab === 'carbon';
     if (id === 'add') return activeTab === 'add';
     if (id === 'my-observations') return activeTab === 'my-observations';
     if (id === 'about') return activeTab === 'about';
@@ -147,6 +156,9 @@ export const Navbar: React.FC<NavbarProps> = ({
       onFindNearMe();
     } else if (id === 'identify') {
       setActiveTab('identify');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else if (id === 'carbon') {
+      setActiveTab('carbon');
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } else if (id === 'add') {
       setActiveTab('add');

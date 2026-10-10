@@ -114,6 +114,10 @@ function mapDocToPlant(docSnap: QueryDocumentSnapshot<DocumentData>): Plant {
     isUserAdded: true,
     ownerUid: data.ownerUid || undefined,
     ownerUsername: data.ownerUsername || undefined,
+    trunkDiameterCm: typeof data.trunkDiameterCm === 'number' ? data.trunkDiameterCm : undefined,
+    treeHeightM: typeof data.treeHeightM === 'number' ? data.treeHeightM : undefined,
+    treeAgeYears: typeof data.treeAgeYears === 'number' ? data.treeAgeYears : undefined,
+    measurementDate: typeof data.measurementDate === 'string' ? data.measurementDate : undefined,
     createdAt: data.createdAt,
     updatedAt: data.updatedAt,
   };
@@ -201,13 +205,23 @@ export async function addPlantToFirestore(
   }
 
   try {
-    const plantsRef = collection(db, PLANTS_COLLECTION);
-    const docRef = await addDoc(plantsRef, {
+    const rawPayload: Record<string, any> = {
       ...plantData,
       ownerUid,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
+    };
+
+    // Filter out undefined values
+    const cleanPayload: Record<string, any> = {};
+    Object.keys(rawPayload).forEach((key) => {
+      if (rawPayload[key] !== undefined) {
+        cleanPayload[key] = rawPayload[key];
+      }
     });
+
+    const plantsRef = collection(db, PLANTS_COLLECTION);
+    const docRef = await addDoc(plantsRef, cleanPayload);
 
     return docRef.id;
   } catch (error) {

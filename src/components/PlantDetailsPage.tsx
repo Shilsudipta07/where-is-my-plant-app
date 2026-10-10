@@ -18,6 +18,13 @@ import {
   X,
   AlertTriangle,
   Check,
+  TreeDeciduous,
+  Leaf as LeafIcon,
+  CloudSun,
+  Ruler,
+  TrendingUp,
+  CheckCircle2,
+  ShieldCheck,
 } from 'lucide-react';
 import { Plant } from '../types/plant';
 import { getUserProfile } from '../services/userService';
@@ -25,6 +32,14 @@ import { fetchGbifTaxonomyDetails, GbifTaxonomyDetails } from '../services/gbifS
 import { subscribeToAuth, getCurrentUid } from '../services/authService';
 import { canEditPlant, canDeletePlant, isWebsiteOwnerUid } from '../config/owner';
 import { updatePlantInFirestore, deletePlantFromFirestore } from '../services/firestoreService';
+import {
+  calculatePlantCarbon,
+  validateTrunkDiameter,
+  validateTreeHeight,
+  validateTreeAge,
+  validateMeasurementDate,
+  CARBON_CONSTANTS,
+} from '../utils/carbonCalculation';
 
 interface PlantDetailsPageProps {
   plant: Plant;
@@ -32,6 +47,7 @@ interface PlantDetailsPageProps {
   onOpenInExploreMap?: (plant: Plant) => void;
   onPlantUpdated?: (updated: Plant) => void;
   onPlantDeleted?: (plantId: string) => void;
+  onOpenCarbonDashboard?: () => void;
 }
 
 export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
@@ -40,6 +56,7 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
   onOpenInExploreMap,
   onPlantUpdated,
   onPlantDeleted,
+  onOpenCarbonDashboard,
 }) => {
   const [uploaderUsername, setUploaderUsername] = useState<string | null>(
     plant.ownerUsername || null
@@ -67,6 +84,19 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
   const [editDescription, setEditDescription] = useState(plant.description || '');
   const [editStudentTip, setEditStudentTip] = useState(plant.studentTip || '');
   const [editImageUrl, setEditImageUrl] = useState(plant.imageUrl || '');
+  // Biometric fields
+  const [editTrunkDiameter, setEditTrunkDiameter] = useState<string>(
+    plant.trunkDiameterCm !== undefined ? String(plant.trunkDiameterCm) : ''
+  );
+  const [editTreeHeight, setEditTreeHeight] = useState<string>(
+    plant.treeHeightM !== undefined ? String(plant.treeHeightM) : ''
+  );
+  const [editTreeAge, setEditTreeAge] = useState<string>(
+    plant.treeAgeYears !== undefined ? String(plant.treeAgeYears) : ''
+  );
+  const [editMeasurementDate, setEditMeasurementDate] = useState<string>(
+    plant.measurementDate || ''
+  );
 
   // Subscribe to auth state changes to detect sign-in / Google linking
   useEffect(() => {
@@ -92,6 +122,10 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
     setEditDescription(plant.description || '');
     setEditStudentTip(plant.studentTip || '');
     setEditImageUrl(plant.imageUrl || '');
+    setEditTrunkDiameter(plant.trunkDiameterCm !== undefined ? String(plant.trunkDiameterCm) : '');
+    setEditTreeHeight(plant.treeHeightM !== undefined ? String(plant.treeHeightM) : '');
+    setEditTreeAge(plant.treeAgeYears !== undefined ? String(plant.treeAgeYears) : '');
+    setEditMeasurementDate(plant.measurementDate || '');
     setEditError(null);
     setIsEditModalOpen(true);
   };
@@ -324,6 +358,9 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
 
   const hasLocationSource = Boolean(plant.locationSource && plant.locationSource.trim());
 
+  // Quantitative carbon sequestration calculation
+  const carbonEstimate = React.useMemo(() => calculatePlantCarbon(plant), [plant]);
+
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!plant.id) return;
@@ -363,6 +400,31 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
       }
     }
 
+    // Biometric field validations (optional)
+    const valDbh = validateTrunkDiameter(editTrunkDiameter);
+    if (!valDbh.isValid) {
+      setEditError(valDbh.error || 'Invalid trunk diameter.');
+      return;
+    }
+
+    const valHeight = validateTreeHeight(editTreeHeight);
+    if (!valHeight.isValid) {
+      setEditError(valHeight.error || 'Invalid tree height.');
+      return;
+    }
+
+    const valAge = validateTreeAge(editTreeAge);
+    if (!valAge.isValid) {
+      setEditError(valAge.error || 'Invalid tree age.');
+      return;
+    }
+
+    const valDate = validateMeasurementDate(editMeasurementDate);
+    if (!valDate.isValid) {
+      setEditError(valDate.error || 'Invalid measurement date.');
+      return;
+    }
+
     setIsSavingEdit(true);
     setEditError(null);
 
@@ -378,6 +440,10 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
         studentTip: editStudentTip.trim() || undefined,
         imageUrl: editImageUrl.trim() || undefined,
         coordinates: hasCoords ? { lat: parsedLat, lng: parsedLng } : plant.coordinates,
+        trunkDiameterCm: valDbh.value,
+        treeHeightM: valHeight.value,
+        treeAgeYears: valAge.value,
+        measurementDate: valDate.value,
       };
 
       await updatePlantInFirestore(plant.id, cleanUpdate, currentUid || undefined);
@@ -526,6 +592,184 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
                   </p>
                 )}
               </div>
+            </div>
+
+            {/* Carbon Sequestration & Biometrics Card */}
+            <div className="bg-white rounded-3xl border border-stone-200 p-6 shadow-sm space-y-5">
+              <div className="flex items-center justify-between border-b border-stone-100 pb-3 flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <TreeDeciduous className="w-4 h-4 text-emerald-800" />
+                  <h2 className="font-serif-display text-lg font-bold text-stone-900">
+                    Carbon Sequestration &amp; Biometrics
+                  </h2>
+                </div>
+                <span
+                  className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
+                    carbonEstimate.status === 'eligible'
+                      ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                      : carbonEstimate.status === 'insufficient_data'
+                      ? 'bg-amber-50 text-amber-900 border-amber-200'
+                      : 'bg-stone-100 text-stone-600 border-stone-200'
+                  }`}
+                >
+                  {carbonEstimate.status === 'eligible' && 'Eligible Specimen'}
+                  {carbonEstimate.status === 'insufficient_data' && 'Insufficient Data'}
+                  {carbonEstimate.status === 'not_applicable' && 'Not Applicable'}
+                </span>
+              </div>
+
+              {/* Recorded Biometrics Sub-grid */}
+              <div className="space-y-2">
+                <span className="text-[10px] uppercase font-bold tracking-wider text-stone-400 block">
+                  Field Biometric Measurements
+                </span>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono">
+                  <div className="p-2.5 bg-stone-50 rounded-xl border border-stone-200/80">
+                    <span className="text-[9px] font-sans uppercase font-bold text-stone-400 block">Trunk DBH</span>
+                    <span className="font-bold text-stone-800 text-xs">
+                      {plant.trunkDiameterCm ? `${plant.trunkDiameterCm} cm` : 'Not recorded'}
+                    </span>
+                  </div>
+                  <div className="p-2.5 bg-stone-50 rounded-xl border border-stone-200/80">
+                    <span className="text-[9px] font-sans uppercase font-bold text-stone-400 block">Tree Height</span>
+                    <span className="font-bold text-stone-800 text-xs">
+                      {plant.treeHeightM ? `${plant.treeHeightM} m` : 'Not recorded'}
+                    </span>
+                  </div>
+                  <div className="p-2.5 bg-stone-50 rounded-xl border border-stone-200/80">
+                    <span className="text-[9px] font-sans uppercase font-bold text-stone-400 block">Tree Age</span>
+                    <span className="font-bold text-stone-800 text-xs">
+                      {plant.treeAgeYears ? `${plant.treeAgeYears} yrs` : 'Not recorded'}
+                    </span>
+                  </div>
+                  <div className="p-2.5 bg-stone-50 rounded-xl border border-stone-200/80">
+                    <span className="text-[9px] font-sans uppercase font-bold text-stone-400 block">Measured Date</span>
+                    <span className="font-bold text-stone-800 text-[11px]">
+                      {plant.measurementDate || 'Not recorded'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Carbon Calculations or Explanations */}
+              {carbonEstimate.status === 'eligible' ? (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {/* Stored Carbon (kg C) */}
+                    <div className="p-4 bg-emerald-50/70 border border-emerald-200 rounded-2xl space-y-1">
+                      <span className="text-[10px] uppercase tracking-wider text-emerald-800 font-bold block">
+                        Stored Elemental Carbon (C)
+                      </span>
+                      <div className="text-2xl font-black font-mono text-emerald-950">
+                        {carbonEstimate.storedCarbonKg?.toLocaleString('en-US', {
+                          minimumFractionDigits: 1,
+                          maximumFractionDigits: 1,
+                        })}
+                        <span className="text-xs font-sans font-bold text-emerald-700 ml-1">kg C</span>
+                      </div>
+                      <p className="text-[10px] text-emerald-800">
+                        Dry elemental carbon sequestered in cellulose &amp; lignin
+                      </p>
+                    </div>
+
+                    {/* Stored CO2 Equivalent (kg CO2e) */}
+                    <div className="p-4 bg-teal-50/70 border border-teal-200 rounded-2xl space-y-1">
+                      <span className="text-[10px] uppercase tracking-wider text-teal-800 font-bold block">
+                        CO₂ Equivalent (CO₂e)
+                      </span>
+                      <div className="text-2xl font-black font-mono text-teal-950">
+                        {carbonEstimate.storedCo2eKg?.toLocaleString('en-US', {
+                          minimumFractionDigits: 1,
+                          maximumFractionDigits: 1,
+                        })}
+                        <span className="text-xs font-sans font-bold text-teal-700 ml-1">kg CO₂e</span>
+                      </div>
+                      <p className="text-[10px] text-teal-800">
+                        Total atmospheric carbon dioxide removed (× 44/12)
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Annual Absorption Card */}
+                  <div className="p-3.5 bg-stone-50 rounded-2xl border border-stone-200 flex items-center justify-between flex-wrap gap-2 text-xs">
+                    <div>
+                      <span className="text-[10px] uppercase tracking-wider text-stone-400 font-bold block">
+                        Annual Sequestration Rate
+                      </span>
+                      {carbonEstimate.annualAbsorptionCo2eKg !== null ? (
+                        <div className="font-bold text-stone-900 font-mono text-sm">
+                          {carbonEstimate.annualAbsorptionCo2eKg.toFixed(1)} kg CO₂e/year
+                          <span className="text-[11px] text-stone-500 font-sans ml-2">
+                            ({carbonEstimate.annualAbsorptionCarbonKg?.toFixed(1)} kg C/year)
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-amber-800 text-[11px] font-medium">
+                          Requires tree age (years) to calculate annual rate
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-stone-400 font-mono">
+                      AGB: {carbonEstimate.abovegroundBiomassKg} kg • BGB: {carbonEstimate.belowgroundBiomassKg} kg
+                    </span>
+                  </div>
+
+                  {/* Methodology Note */}
+                  <div className="p-3 bg-stone-50 rounded-xl border border-stone-200/70 text-[11px] text-stone-600 space-y-1">
+                    <div className="font-semibold text-stone-800 flex items-center gap-1.5">
+                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                      <span>{carbonEstimate.methodName}</span>
+                    </div>
+                    <p className="text-[10px] text-stone-500 leading-relaxed">
+                      Assumes wood density ρ = {CARBON_CONSTANTS.DEFAULT_WOOD_DENSITY} g/cm³, IPCC root ratio = {CARBON_CONSTANTS.ROOT_TO_SHOOT_RATIO}, and dry biomass carbon fraction = {(CARBON_CONSTANTS.CARBON_FRACTION * 100).toFixed(0)}%.
+                    </p>
+                  </div>
+                </div>
+              ) : carbonEstimate.status === 'insufficient_data' ? (
+                <div className="p-4 bg-amber-50/70 border border-amber-200 rounded-2xl space-y-2 text-xs">
+                  <div className="flex items-center gap-2 text-amber-900 font-bold">
+                    <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>Insufficient Biometric Data</span>
+                  </div>
+                  <p className="text-amber-800 text-[11px] leading-relaxed">
+                    Trunk diameter at breast height (DBH in cm) is required by peer-reviewed allometric equations.
+                    Values are not invented or synthesized without real measurements.
+                  </p>
+                  {canEdit && (
+                    <button
+                      type="button"
+                      onClick={openEditModal}
+                      className="inline-flex items-center gap-1 px-3 py-1.5 bg-amber-900 hover:bg-amber-950 text-white rounded-lg text-[11px] font-semibold transition-all cursor-pointer shadow-2xs"
+                    >
+                      <Pencil className="w-3 h-3" />
+                      <span>Add DBH &amp; Biometrics</span>
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="p-4 bg-stone-50 rounded-2xl border border-stone-200/80 space-y-1.5 text-xs">
+                  <div className="flex items-center gap-2 text-stone-700 font-bold">
+                    <Info className="w-4 h-4 text-stone-400 shrink-0" />
+                    <span>Not Applicable for {plant.category}</span>
+                  </div>
+                  <p className="text-stone-500 text-[11px] leading-relaxed">
+                    Forest allometric equations calculate permanent secondary xylem (woody trunk) carbon storage.
+                    Non-tree flora do not form substantial permanent woody carbon sinks.
+                  </p>
+                </div>
+              )}
+
+              {/* View Campus Dashboard link */}
+              {onOpenCarbonDashboard && (
+                <button
+                  type="button"
+                  onClick={onOpenCarbonDashboard}
+                  className="w-full py-2.5 px-3 bg-stone-100 hover:bg-stone-200 text-stone-800 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                >
+                  <TreeDeciduous className="w-3.5 h-3.5 text-emerald-800" />
+                  <span>View Campus Carbon Dashboard</span>
+                </button>
+              )}
             </div>
           </div>
 
@@ -988,6 +1232,86 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
                     placeholder="e.g. -122.4194"
                     className="w-full px-3 py-2 bg-stone-50 rounded-xl border border-stone-200 focus:outline-emerald-800 focus:bg-white transition-all text-xs font-mono"
                   />
+                </div>
+              </div>
+
+              {/* Biometric & Carbon Measurements (Optional) */}
+              <div className="p-4 rounded-2xl bg-emerald-50/50 border border-emerald-200/80 space-y-3">
+                <div className="flex items-center gap-1.5 text-emerald-950 font-bold">
+                  <TreeDeciduous className="w-4 h-4 text-emerald-800" />
+                  <span>Biometric &amp; Tree Carbon Measurements (Optional)</span>
+                </div>
+                <p className="text-[11px] text-stone-500 leading-relaxed">
+                  Provide trunk measurements to calculate elemental stored carbon (kg C) and CO₂e sequestration.
+                </p>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* Trunk Diameter (DBH in cm) */}
+                  <div className="space-y-1">
+                    <label className="font-semibold text-stone-700 flex items-center gap-1">
+                      <Ruler className="w-3.5 h-3.5 text-emerald-800" />
+                      <span>Trunk Diameter / DBH (cm)</span>
+                    </label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0.5"
+                      max="500"
+                      value={editTrunkDiameter}
+                      onChange={(e) => setEditTrunkDiameter(e.target.value)}
+                      placeholder="e.g. 32.5"
+                      className="w-full px-3 py-2 bg-white rounded-xl border border-stone-200 focus:outline-emerald-800 transition-all text-xs font-mono"
+                    />
+                    <span className="text-[10px] text-stone-400 block">Measured at breast height (~1.37m)</span>
+                  </div>
+
+                  {/* Tree Height (m) */}
+                  <div className="space-y-1">
+                    <label className="font-semibold text-stone-700">Tree Height (meters)</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0.5"
+                      max="150"
+                      value={editTreeHeight}
+                      onChange={(e) => setEditTreeHeight(e.target.value)}
+                      placeholder="e.g. 12.0"
+                      className="w-full px-3 py-2 bg-white rounded-xl border border-stone-200 focus:outline-emerald-800 transition-all text-xs font-mono"
+                    />
+                    <span className="text-[10px] text-stone-400 block">Total ground-to-crown height</span>
+                  </div>
+
+                  {/* Tree Age (years) */}
+                  <div className="space-y-1">
+                    <label className="font-semibold text-stone-700">Estimated Tree Age (years)</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="0.1"
+                      max="5000"
+                      value={editTreeAge}
+                      onChange={(e) => setEditTreeAge(e.target.value)}
+                      placeholder="e.g. 18"
+                      className="w-full px-3 py-2 bg-white rounded-xl border border-stone-200 focus:outline-emerald-800 transition-all text-xs font-mono"
+                    />
+                    <span className="text-[10px] text-stone-400 block">Enables annual CO₂e absorption rate</span>
+                  </div>
+
+                  {/* Measurement Date */}
+                  <div className="space-y-1">
+                    <label className="font-semibold text-stone-700 flex items-center gap-1">
+                      <Calendar className="w-3.5 h-3.5 text-stone-400" />
+                      <span>Biometric Measurement Date</span>
+                    </label>
+                    <input
+                      type="date"
+                      max={new Date().toISOString().split('T')[0]}
+                      value={editMeasurementDate}
+                      onChange={(e) => setEditMeasurementDate(e.target.value)}
+                      className="w-full px-3 py-2 bg-white rounded-xl border border-stone-200 focus:outline-emerald-800 transition-all text-xs font-mono"
+                    />
+                    <span className="text-[10px] text-stone-400 block">Date of field survey</span>
+                  </div>
                 </div>
               </div>
 

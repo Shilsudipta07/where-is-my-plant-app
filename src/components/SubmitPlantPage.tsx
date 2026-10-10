@@ -22,6 +22,8 @@ import {
   Crosshair,
   BookOpen,
   Globe,
+  TreeDeciduous,
+  Ruler,
 } from 'lucide-react';
 import lavenderImg from '../assets/images/plant_lavender_wildflower_1790167109212.jpg';
 import { DEMO_CAMPUS_CENTER } from '../data/samplePlants';
@@ -37,6 +39,12 @@ import {
   isFirebaseAuthenticated,
 } from '../services/authService';
 import { compressImageFile } from '../utils/imageUtils';
+import {
+  validateTrunkDiameter,
+  validateTreeHeight,
+  validateTreeAge,
+  validateMeasurementDate,
+} from '../utils/carbonCalculation';
 
 interface SubmitPlantPageProps {
   onBackToHome: () => void;
@@ -77,6 +85,12 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
   const [previewImage, setPreviewImage] = useState<string>(lavenderImg);
   const [hasCustomPhoto, setHasCustomPhoto] = useState<boolean>(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
+
+  // Optional biometric measurement state for allometric carbon calculations
+  const [trunkDiameterCm, setTrunkDiameterCm] = useState<string>('');
+  const [treeHeightM, setTreeHeightM] = useState<string>('');
+  const [treeAgeYears, setTreeAgeYears] = useState<string>('');
+  const [measurementDate, setMeasurementDate] = useState<string>('');
 
   // Location Selection State (GPS, Interactive Map, Manual Coordinates)
   const defaultLat = userLocation?.lat ? userLocation.lat.toFixed(6) : '24.0988';
@@ -459,6 +473,10 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
     setHasCustomPhoto(false);
     setPhotoError(null);
     setSubmitError(null);
+    setTrunkDiameterCm('');
+    setTreeHeightM('');
+    setTreeAgeYears('');
+    setMeasurementDate('');
     const parsedLat = parseFloat(defaultLat);
     const parsedLng = parseFloat(defaultLng);
     if (markerRef.current && mapInstanceRef.current && !isNaN(parsedLat) && !isNaN(parsedLng)) {
@@ -513,6 +531,31 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
       return;
     }
 
+    // Validate optional biometric fields
+    const valDbh = validateTrunkDiameter(trunkDiameterCm);
+    if (!valDbh.isValid) {
+      setSubmitError(valDbh.error || 'Invalid trunk diameter.');
+      return;
+    }
+
+    const valHeight = validateTreeHeight(treeHeightM);
+    if (!valHeight.isValid) {
+      setSubmitError(valHeight.error || 'Invalid tree height.');
+      return;
+    }
+
+    const valAge = validateTreeAge(treeAgeYears);
+    if (!valAge.isValid) {
+      setSubmitError(valAge.error || 'Invalid tree age.');
+      return;
+    }
+
+    const valDate = validateMeasurementDate(measurementDate);
+    if (!valDate.isValid) {
+      setSubmitError(valDate.error || 'Invalid measurement date.');
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {
@@ -548,6 +591,10 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
         isUserAdded: true,
         ownerUid: currentUid,
         ownerUsername: authState.profile?.username ? `@${authState.profile.username}` : undefined,
+        trunkDiameterCm: valDbh.value,
+        treeHeightM: valHeight.value,
+        treeAgeYears: valAge.value,
+        measurementDate: valDate.value,
       };
 
       // Save directly to Firestore "plants" collection with ownerUid and server timestamp
@@ -916,6 +963,102 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
                     placeholder="e.g. Lamiaceae, Fabaceae"
                     className="w-full px-3.5 py-2.5 text-xs text-stone-900 bg-stone-50 border border-stone-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white transition-colors disabled:opacity-60"
                   />
+                </div>
+              </div>
+
+              {/* Optional Tree Biometrics & Carbon Sequestration Section */}
+              <div className="p-4 rounded-2xl bg-emerald-50/60 border border-emerald-200/90 space-y-3">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <TreeDeciduous className="w-4 h-4 text-emerald-800" />
+                    <span className="text-xs font-bold uppercase tracking-wider text-emerald-950">
+                      Tree Biometrics &amp; Carbon Sequestration (Optional)
+                    </span>
+                  </div>
+                  <span className="text-[10px] bg-emerald-100 text-emerald-900 font-semibold px-2 py-0.5 rounded-full">
+                    IPCC 2006 / Chave et al. Allometry
+                  </span>
+                </div>
+                <p className="text-[11px] text-stone-600 leading-relaxed">
+                  For woody tree species, recording trunk diameter enables calculating stored carbon (kg C), CO₂e, and annual absorption.
+                  All fields are strictly optional.
+                </p>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                  {/* Trunk Diameter / DBH */}
+                  <div>
+                    <label className="block text-[11px] font-bold text-stone-700 mb-1 flex items-center gap-1">
+                      <Ruler className="w-3.5 h-3.5 text-emerald-700" />
+                      <span>Trunk DBH (cm)</span>
+                    </label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0.5"
+                      max="500"
+                      disabled={isSubmitting}
+                      value={trunkDiameterCm}
+                      onChange={(e) => setTrunkDiameterCm(e.target.value)}
+                      placeholder="e.g. 32.5"
+                      className="w-full px-3 py-2 text-xs text-stone-900 bg-white border border-stone-200 rounded-xl focus:outline-none focus:border-emerald-600 font-mono transition-colors disabled:opacity-60"
+                    />
+                    <span className="text-[10px] text-stone-400 mt-0.5 block">Diameter at ~1.37m height</span>
+                  </div>
+
+                  {/* Tree Height */}
+                  <div>
+                    <label className="block text-[11px] font-bold text-stone-700 mb-1">
+                      Tree Height (m)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0.5"
+                      max="150"
+                      disabled={isSubmitting}
+                      value={treeHeightM}
+                      onChange={(e) => setTreeHeightM(e.target.value)}
+                      placeholder="e.g. 12.0"
+                      className="w-full px-3 py-2 text-xs text-stone-900 bg-white border border-stone-200 rounded-xl focus:outline-none focus:border-emerald-600 font-mono transition-colors disabled:opacity-60"
+                    />
+                    <span className="text-[10px] text-stone-400 mt-0.5 block">Ground to top of crown</span>
+                  </div>
+
+                  {/* Tree Age */}
+                  <div>
+                    <label className="block text-[11px] font-bold text-stone-700 mb-1">
+                      Tree Age (years)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="0.1"
+                      max="5000"
+                      disabled={isSubmitting}
+                      value={treeAgeYears}
+                      onChange={(e) => setTreeAgeYears(e.target.value)}
+                      placeholder="e.g. 18"
+                      className="w-full px-3 py-2 text-xs text-stone-900 bg-white border border-stone-200 rounded-xl focus:outline-none focus:border-emerald-600 font-mono transition-colors disabled:opacity-60"
+                    />
+                    <span className="text-[10px] text-stone-400 mt-0.5 block">Enables annual CO₂e rate</span>
+                  </div>
+
+                  {/* Measurement Date */}
+                  <div>
+                    <label className="block text-[11px] font-bold text-stone-700 mb-1 flex items-center gap-1">
+                      <Calendar className="w-3.5 h-3.5 text-stone-400" />
+                      <span>Measurement Date</span>
+                    </label>
+                    <input
+                      type="date"
+                      max={new Date().toISOString().split('T')[0]}
+                      disabled={isSubmitting}
+                      value={measurementDate}
+                      onChange={(e) => setMeasurementDate(e.target.value)}
+                      className="w-full px-3 py-2 text-xs text-stone-900 bg-white border border-stone-200 rounded-xl focus:outline-none focus:border-emerald-600 font-mono transition-colors disabled:opacity-60"
+                    />
+                    <span className="text-[10px] text-stone-400 mt-0.5 block">Survey date</span>
+                  </div>
                 </div>
               </div>
 

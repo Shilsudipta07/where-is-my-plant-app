@@ -1,9 +1,15 @@
 import React, { useState, useRef } from 'react';
 import { Plant } from '../types/plant';
-import { X, Plus, Upload, CheckCircle, Sparkles, Loader2, AlertCircle } from 'lucide-react';
+import { X, Plus, Upload, CheckCircle, Sparkles, Loader2, AlertCircle, TreeDeciduous, Ruler, Calendar } from 'lucide-react';
 import lavenderImg from '../assets/images/plant_lavender_wildflower_1790167109212.jpg';
 import { addPlantToFirestore } from '../services/firestoreService';
 import { compressImageFile } from '../utils/imageUtils';
+import {
+  validateTrunkDiameter,
+  validateTreeHeight,
+  validateTreeAge,
+  validateMeasurementDate,
+} from '../utils/carbonCalculation';
 
 interface AddPlantModalProps {
   isOpen: boolean;
@@ -28,6 +34,12 @@ export const AddPlantModal: React.FC<AddPlantModalProps> = ({
   const [studentTip, setStudentTip] = useState('');
   const [description, setDescription] = useState('');
   const [previewImage, setPreviewImage] = useState<string>(lavenderImg);
+
+  // Optional biometric measurement state for allometric carbon calculations
+  const [trunkDiameterCm, setTrunkDiameterCm] = useState<string>('');
+  const [treeHeightM, setTreeHeightM] = useState<string>('');
+  const [treeAgeYears, setTreeAgeYears] = useState<string>('');
+  const [measurementDate, setMeasurementDate] = useState<string>('');
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submittedSuccess, setSubmittedSuccess] = useState(false);
@@ -72,6 +84,10 @@ export const AddPlantModal: React.FC<AddPlantModalProps> = ({
     setDescription('');
     setStudentTip('');
     setPreviewImage(lavenderImg);
+    setTrunkDiameterCm('');
+    setTreeHeightM('');
+    setTreeAgeYears('');
+    setMeasurementDate('');
     setErrorMessage(null);
   };
 
@@ -87,6 +103,31 @@ export const AddPlantModal: React.FC<AddPlantModalProps> = ({
 
     if (previewImage && previewImage.length > 700 * 1024) {
       setErrorMessage('Plant photo data exceeds 700 KB. Please upload a smaller compressed image.');
+      return;
+    }
+
+    // Validate optional biometric fields
+    const valDbh = validateTrunkDiameter(trunkDiameterCm);
+    if (!valDbh.isValid) {
+      setErrorMessage(valDbh.error || 'Invalid trunk diameter.');
+      return;
+    }
+
+    const valHeight = validateTreeHeight(treeHeightM);
+    if (!valHeight.isValid) {
+      setErrorMessage(valHeight.error || 'Invalid tree height.');
+      return;
+    }
+
+    const valAge = validateTreeAge(treeAgeYears);
+    if (!valAge.isValid) {
+      setErrorMessage(valAge.error || 'Invalid tree age.');
+      return;
+    }
+
+    const valDate = validateMeasurementDate(measurementDate);
+    if (!valDate.isValid) {
+      setErrorMessage(valDate.error || 'Invalid measurement date.');
       return;
     }
 
@@ -124,6 +165,10 @@ export const AddPlantModal: React.FC<AddPlantModalProps> = ({
         demoLocationDescription: `Student Field Sighting: ${locationName || 'Near nature reserve boundary'}`,
         sightedCount: 1,
         isUserAdded: true,
+        trunkDiameterCm: valDbh.value,
+        treeHeightM: valHeight.value,
+        treeAgeYears: valAge.value,
+        measurementDate: valDate.value,
       };
 
       const docId = await addPlantToFirestore(plantData);
@@ -407,6 +452,88 @@ export const AddPlantModal: React.FC<AddPlantModalProps> = ({
                 placeholder="Describe growth habit, surrounding plant community, or pollinator visitors..."
                 className="w-full px-3 py-2 text-xs bg-white rounded-xl border border-stone-300 focus:outline-none focus:border-emerald-700 disabled:opacity-60"
               />
+            </div>
+
+            {/* Optional Biometrics & Tree Carbon Measurements */}
+            <div className="p-3.5 rounded-2xl bg-emerald-50/60 border border-emerald-200/90 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 text-emerald-950 font-bold text-xs">
+                  <TreeDeciduous className="w-4 h-4 text-emerald-800" />
+                  <span>Tree Biometrics &amp; Carbon Data (Optional)</span>
+                </div>
+                <span className="text-[10px] text-emerald-800 font-semibold bg-emerald-100 px-2 py-0.5 rounded-full">
+                  Allometry
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                <div>
+                  <label className="block text-[10px] font-bold text-stone-700 mb-1 flex items-center gap-1">
+                    <Ruler className="w-3 h-3 text-emerald-700" />
+                    <span>Trunk DBH (cm)</span>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0.5"
+                    max="500"
+                    disabled={isSubmitting}
+                    value={trunkDiameterCm}
+                    onChange={(e) => setTrunkDiameterCm(e.target.value)}
+                    placeholder="e.g. 32.5"
+                    className="w-full px-2.5 py-1.5 text-xs bg-white rounded-xl border border-stone-300 focus:outline-none focus:border-emerald-700 font-mono disabled:opacity-60"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-stone-700 mb-1">
+                    Height (m)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0.5"
+                    max="150"
+                    disabled={isSubmitting}
+                    value={treeHeightM}
+                    onChange={(e) => setTreeHeightM(e.target.value)}
+                    placeholder="e.g. 12.0"
+                    className="w-full px-2.5 py-1.5 text-xs bg-white rounded-xl border border-stone-300 focus:outline-none focus:border-emerald-700 font-mono disabled:opacity-60"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-stone-700 mb-1">
+                    Age (years)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="0.1"
+                    max="5000"
+                    disabled={isSubmitting}
+                    value={treeAgeYears}
+                    onChange={(e) => setTreeAgeYears(e.target.value)}
+                    placeholder="e.g. 18"
+                    className="w-full px-2.5 py-1.5 text-xs bg-white rounded-xl border border-stone-300 focus:outline-none focus:border-emerald-700 font-mono disabled:opacity-60"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-stone-700 mb-1 flex items-center gap-1">
+                    <Calendar className="w-3 h-3 text-stone-400" />
+                    <span>Survey Date</span>
+                  </label>
+                  <input
+                    type="date"
+                    max={new Date().toISOString().split('T')[0]}
+                    disabled={isSubmitting}
+                    value={measurementDate}
+                    onChange={(e) => setMeasurementDate(e.target.value)}
+                    className="w-full px-2 py-1.5 text-xs bg-white rounded-xl border border-stone-300 focus:outline-none focus:border-emerald-700 font-mono disabled:opacity-60"
+                  />
+                </div>
+              </div>
             </div>
 
             {/* Submit Button */}

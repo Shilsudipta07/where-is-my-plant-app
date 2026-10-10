@@ -17,6 +17,7 @@ import { SearchResultsView } from './components/SearchResultsView';
 import { IdentifyPlantPage } from './components/IdentifyPlantPage';
 import { SubmitPlantPage } from './components/SubmitPlantPage';
 import { PlantDetailsPage } from './components/PlantDetailsPage';
+import { CarbonDashboard } from './components/CarbonDashboard';
 import { AccountView } from './components/AccountView';
 import { Footer } from './components/Footer';
 import { getPlantsFromFirestore } from './services/firestoreService';
@@ -476,6 +477,26 @@ export default function App() {
                 }
                 showToast('Plant observation deleted.');
               }}
+              onOpenCarbonDashboard={() => {
+                setIsNearMeActive(false);
+                setActiveTab('carbon');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+            />
+          </div>
+        )}
+
+        {activeTab === 'carbon' && (
+          <div className="pt-4 animate-in fade-in duration-150">
+            <CarbonDashboard
+              plants={plants}
+              onSelectPlant={(plant) => handleOpenPlantDetails(plant)}
+              onBackToHome={() => {
+                setIsNearMeActive(false);
+                setActiveTab('home');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              onOpenAddPlant={handleOpenAddPlant}
             />
           </div>
         )}
