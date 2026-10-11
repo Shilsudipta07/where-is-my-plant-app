@@ -34,6 +34,8 @@ import {
   ShieldCheck,
   RefreshCw,
   Layers,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 
 export type RadiusKmOption = 1 | 5 | 10 | 25 | 50;
@@ -41,6 +43,8 @@ export type RadiusKmOption = 1 | 5 | 10 | 25 | 50;
 interface ExploreMapProps {
   plants: Plant[];
   selectedPlant: Plant | null;
+  selectedPlantId?: string | null;
+  selectedPlantCoordinates?: Coordinates | null;
   onSelectPlant: (plant: Plant) => void;
   userLocation: Coordinates | null;
   onLocateUser: () => void;
@@ -151,6 +155,8 @@ const escapeHtml = (str: string): string => {
 export const ExploreMap: React.FC<ExploreMapProps> = ({
   plants,
   selectedPlant,
+  selectedPlantId,
+  selectedPlantCoordinates,
   onSelectPlant,
   userLocation,
   onLocateUser,
@@ -175,12 +181,44 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
   const demoMarkersLayerRef = useRef<L.LayerGroup | null>(null);
   const inatMarkersLayerRef = useRef<L.LayerGroup | null>(null);
   const communityMarkersLayerRef = useRef<L.LayerGroup | null>(null);
+  const selectedPlantMarkerLayerRef = useRef<L.LayerGroup | null>(null);
   const nurseryMarkersLayerRef = useRef<L.LayerGroup | null>(null);
   const userMarkerRef = useRef<L.Marker | null>(null);
   const userAccuracyCircleRef = useRef<L.Circle | null>(null);
   const userRadiusCircleRef = useRef<L.Circle | null>(null);
   const markersMapRef = useRef<Map<string, L.Marker>>(new Map());
   const routeLayerRef = useRef<L.LayerGroup | null>(null);
+
+  // Safely resolve selected plant record and coordinates
+  const effectiveSelectedPlant = useMemo(() => {
+    const fromList = selectedPlantId ? plants.find((p) => p.id === selectedPlantId) : null;
+    if (selectedPlant && fromList) {
+      return { ...fromList, ...selectedPlant };
+    }
+    if (selectedPlant) return selectedPlant;
+    if (fromList) return fromList;
+    return null;
+  }, [selectedPlant, selectedPlantId, plants]);
+
+  const targetCoordinates: Coordinates | null = useMemo(() => {
+    const rawCoords = selectedPlantCoordinates || effectiveSelectedPlant?.coordinates;
+    if (!rawCoords) return null;
+    const lat = typeof rawCoords.lat === 'string' ? parseFloat(rawCoords.lat) : rawCoords.lat;
+    const lng = typeof rawCoords.lng === 'string' ? parseFloat(rawCoords.lng) : rawCoords.lng;
+    if (
+      typeof lat === 'number' &&
+      typeof lng === 'number' &&
+      !isNaN(lat) &&
+      !isNaN(lng) &&
+      lat >= -90 &&
+      lat <= 90 &&
+      lng >= -180 &&
+      lng <= 180
+    ) {
+      return { lat, lng, accuracy: rawCoords.accuracy };
+    }
+    return null;
+  }, [effectiveSelectedPlant, selectedPlantCoordinates]);
 
   // Plant Nurseries State
   const [nurseries, setNurseries] = useState<PlantNursery[]>([]);
@@ -220,6 +258,40 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
 
   // Map view mode: 'map' (OpenStreetMap) or 'satellite' (Esri World Imagery)
   const [mapStyle, setMapStyle] = useState<'map' | 'satellite'>('map');
+
+  // Fullscreen expand / collapse mode
+  const [isMapFullscreen, setIsMapFullscreen] = useState<boolean>(false);
+
+  // Resize Leaflet and handle body scroll lock when expanding or collapsing fullscreen
+  useEffect(() => {
+    if (isMapFullscreen) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    const timer1 = setTimeout(() => {
+      mapInstanceRef.current?.invalidateSize();
+    }, 100);
+    const timer2 = setTimeout(() => {
+      mapInstanceRef.current?.invalidateSize();
+    }, 300);
+    return () => {
+      clearTimeout(timer1);
+      clearTimeout(timer2);
+      document.body.style.overflow = '';
+    };
+  }, [isMapFullscreen]);
+
+  // Escape key collapses fullscreen
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isMapFullscreen) {
+        setIsMapFullscreen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isMapFullscreen]);
 
   // Real Observation Data State (iNaturalist Public Observations)
   const [inatRecords, setInatRecords] = useState<INaturalistObservationRecord[]>(() => initialInatRecords || []);
@@ -735,11 +807,17 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
         initialGbifSearch?.trim()
       );
       // Auto-center on first GPS fix only if user explicitly opened Plants Near Me (autoStartTracking)
-      // or opened fresh Explore Map without species search results
-      const centerOnFirst = Boolean(autoStartTracking || !hasActiveSearch);
+      // or opened fresh Explore Map without species search results AND without a selected target plant
+      const hasTargetPlant = Boolean(targetCoordinates);
+      const centerOnFirst = !hasTargetPlant && Boolean(autoStartTracking || !hasActiveSearch);
+      if (hasTargetPlant) {
+        hasUserPannedOrZoomedRef.current = true;
+        setIsFollowing(false);
+        isFollowingRef.current = false;
+      }
       startLocationTracking(centerOnFirst);
     }
-  }, [isActive, autoStartTracking, initialInatRecords, initialGbifRecords, initialInatSearch, initialGbifSearch, startLocationTracking]);
+  }, [isActive, autoStartTracking, initialInatRecords, initialGbifRecords, initialInatSearch, initialGbifSearch, targetCoordinates, startLocationTracking]);
 
   /**
    * Handle "Find Plants Near Me" button click (Requirement 3)
@@ -861,9 +939,9 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
   useEffect(() => {
     if (!mapContainerRef.current || mapInstanceRef.current) return;
 
-    const initialLat = activeUserLocation?.lat || DEFAULT_INDIA_CENTER.lat;
-    const initialLng = activeUserLocation?.lng || DEFAULT_INDIA_CENTER.lng;
-    const initialZoom = activeUserLocation ? 14 : DEFAULT_INDIA_ZOOM;
+    const initialLat = targetCoordinates ? targetCoordinates.lat : (activeUserLocation?.lat || DEFAULT_INDIA_CENTER.lat);
+    const initialLng = targetCoordinates ? targetCoordinates.lng : (activeUserLocation?.lng || DEFAULT_INDIA_CENTER.lng);
+    const initialZoom = targetCoordinates ? 17 : (activeUserLocation ? 14 : DEFAULT_INDIA_ZOOM);
 
     const map = L.map(mapContainerRef.current, {
       center: [initialLat, initialLng],
@@ -901,6 +979,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
     demoMarkersLayerRef.current = L.layerGroup().addTo(map);
     inatMarkersLayerRef.current = L.layerGroup().addTo(map);
     communityMarkersLayerRef.current = L.layerGroup().addTo(map);
+    selectedPlantMarkerLayerRef.current = L.layerGroup().addTo(map);
     nurseryMarkersLayerRef.current = L.layerGroup().addTo(map);
     routeLayerRef.current = L.layerGroup().addTo(map);
 
@@ -924,6 +1003,10 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
       demoMarkersLayerRef.current = null;
       inatMarkersLayerRef.current = null;
       communityMarkersLayerRef.current = null;
+      if (selectedPlantMarkerLayerRef.current) {
+        selectedPlantMarkerLayerRef.current.clearLayers();
+        selectedPlantMarkerLayerRef.current = null;
+      }
       nurseryMarkersLayerRef.current = null;
       userMarkerRef.current = null;
       userAccuracyCircleRef.current = null;
@@ -996,6 +1079,11 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               ? `gbif-search-${initialGbifSearch.trim().toLowerCase()}`
               : '';
 
+    // If a specific target plant was requested, do not fit bounds to previous or initial search queries
+    if (targetCoordinates) {
+      return;
+    }
+
     // If there is no explicit initial search/records or if this exact search view was already initialized,
     // prevent re-fitting bounds or re-querying so user zoom/pan is never overridden.
     if (!initialKey || appliedInitialKeyRef.current === initialKey) {
@@ -1046,7 +1134,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
       const explicitQuery = (initialInatSearch || initialGbifSearch)!.trim();
       handleQuerySpecies(explicitQuery);
     }
-  }, [initialInatRecords, initialInatTaxon, initialGbifRecords, initialInatSearch, initialGbifSearch, handleQuerySpecies]);
+  }, [initialInatRecords, initialInatTaxon, initialGbifRecords, initialInatSearch, initialGbifSearch, targetCoordinates, handleQuerySpecies]);
 
   // Render Map Markers (iNaturalist Observations vs Demo Fallback)
   useEffect(() => {
@@ -1577,27 +1665,175 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
     }
   }, [userLocation]);
 
-  // Handle selectedPlant change from props (center and open popup)
+  // Render, center, and highlight selected plant marker (from Plant Details / Catalog)
+  // Visibly shows the plant marker without removing existing map markers or changing filters
   useEffect(() => {
-    if (!selectedPlant) return;
     const map = mapInstanceRef.current;
-    if (!map) return;
+    const selectedGroup = selectedPlantMarkerLayerRef.current;
+    if (!map || !selectedGroup) return;
 
-    map.setView(
-      [selectedPlant.coordinates.lat, selectedPlant.coordinates.lng],
-      16,
-      { animate: true }
-    );
+    selectedGroup.clearLayers();
 
-    setActiveItem({ type: 'plant', plant: selectedPlant });
-
-    const marker = markersMapRef.current.get(selectedPlant.id);
-    if (marker) {
-      setTimeout(() => {
-        marker.openPopup();
-      }, 300);
+    // If no coordinates or invalid coordinates, handle safely without crashing or panning
+    if (!targetCoordinates) {
+      if (effectiveSelectedPlant) {
+        setActiveItem({ type: 'plant', plant: effectiveSelectedPlant });
+      }
+      return;
     }
-  }, [selectedPlant]);
+
+    const plant: Plant = effectiveSelectedPlant || {
+      id: selectedPlantId || 'selected-plant',
+      commonName: 'Selected Plant Specimen',
+      scientificName: '',
+      family: 'Flora',
+      category: 'Tree',
+      habitat: 'Campus',
+      bloomSeason: 'All seasons',
+      sunExposure: 'Full Sun',
+      waterNeeds: 'Moderate',
+      difficulty: 'Beginner',
+      studentTip: 'Selected from botanical records',
+      description: 'Recorded plant specimen',
+      identificationKeys: {
+        leafShape: 'Simple',
+        leafArrangement: 'Alternate',
+        flowerColor: 'Green',
+        growthHabit: 'Tree',
+      },
+      imageUrl: '',
+      locationName: 'Saved Botanical Location',
+      coordinates: targetCoordinates,
+      demoLocationDescription: 'Campus grounds',
+      sightedCount: 1,
+    };
+
+    // Build prominent botanical pin with highlight ring
+    const markerHtml = `
+      <div class="relative cursor-pointer flex flex-col items-center justify-center transition-transform hover:scale-115">
+        <div style="background-color: #047857;" class="w-10 h-10 rounded-full border-2 border-white shadow-2xl flex items-center justify-center text-white ring-4 ring-emerald-400 ring-offset-2 scale-110">
+          <span style="font-size: 16px; line-height: 1;">🌿</span>
+        </div>
+        <div style="border-top-color: #047857;" class="w-0 h-0 border-x-4 border-x-transparent border-t-[8px] -mt-0.5"></div>
+        <div class="mt-0.5 bg-emerald-950 text-white font-bold text-[9px] px-2 py-0.5 rounded-full shadow-md whitespace-nowrap border border-emerald-400/50 flex items-center gap-1">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span>${escapeHtml(plant.commonName || 'Plant')}</span>
+        </div>
+      </div>
+    `;
+
+    const customIcon = L.divIcon({
+      className: 'selected-plant-highlight-pin',
+      html: markerHtml,
+      iconSize: [48, 56],
+      iconAnchor: [24, 46],
+      popupAnchor: [0, -42],
+    });
+
+    const marker = L.marker([targetCoordinates.lat, targetCoordinates.lng], {
+      icon: customIcon,
+      zIndexOffset: 1200, // render above normal markers
+      title: `Plant: ${plant.commonName || 'Botanical Specimen'}`,
+    });
+
+    const safeCommonName = (plant.commonName || 'Plant Specimen').replace(/'/g, "\\'");
+
+    const popupHtml = `
+      <div style="font-family: inherit; width: 280px;" class="p-3 text-stone-900">
+        <div class="flex items-center justify-between gap-1 mb-2">
+          <span class="text-[10px] uppercase font-bold tracking-wider text-emerald-900 bg-emerald-100 px-2 py-0.5 rounded border border-emerald-300 flex items-center gap-1">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>
+            ${escapeHtml(plant.category || 'Botanical')} Record
+          </span>
+          <span class="text-[10px] font-mono font-medium text-stone-500">
+            #${escapeHtml(plant.id.slice(-6))}
+          </span>
+        </div>
+
+        ${
+          plant.imageUrl
+            ? `<div class="mb-2 relative rounded-lg overflow-hidden h-36 bg-stone-100 border border-stone-200">
+                <img src="${plant.imageUrl}" alt="${escapeHtml(plant.commonName)}" class="w-full h-full object-cover" />
+              </div>`
+            : ''
+        }
+
+        <div class="mb-2">
+          <h4 class="font-serif-display text-base font-bold text-stone-900 leading-tight">
+            ${escapeHtml(plant.commonName)}
+          </h4>
+          ${plant.scientificName ? `<p class="text-xs text-stone-600 italic mt-0.5">${escapeHtml(plant.scientificName)}</p>` : ''}
+        </div>
+
+        <div class="space-y-1.5 text-xs text-stone-700 bg-stone-50 p-2.5 rounded-xl border border-stone-200 mb-2">
+          ${plant.locationName ? `<div><strong>Location:</strong> ${escapeHtml(plant.locationName)}</div>` : ''}
+          <div><strong>Coordinates:</strong> <span class="font-mono text-[11px]">${targetCoordinates.lat.toFixed(5)}°, ${targetCoordinates.lng.toFixed(5)}°</span></div>
+          ${
+            plant.trunkCircumferenceCm
+              ? `<div><strong>Circumference:</strong> ${plant.trunkCircumferenceCm} cm (DBH ≈ ${(plant.trunkCircumferenceCm / 3.1416).toFixed(1)} cm)</div>`
+              : plant.trunkDiameterCm
+              ? `<div><strong>Trunk DBH:</strong> ${plant.trunkDiameterCm} cm</div>`
+              : ''
+          }
+        </div>
+
+        <button
+          type="button"
+          onclick="window.wimpStartNav && window.wimpStartNav(${targetCoordinates.lat}, ${targetCoordinates.lng}, '${safeCommonName}')"
+          class="w-full mb-1.5 py-1.5 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+        >
+          <span>🧭 Start Now (Route)</span>
+        </button>
+      </div>
+    `;
+
+    marker.bindPopup(popupHtml, {
+      closeButton: true,
+      autoPan: true,
+      className: 'botanical-map-popup',
+    });
+
+    marker.on('click', () => {
+      setActiveItem({ type: 'plant', plant });
+    });
+
+    marker.on('popupopen', () => {
+      setActiveItem({ type: 'plant', plant });
+    });
+
+    selectedGroup.addLayer(marker);
+    markersMapRef.current.set(plant.id, marker);
+
+    // Stop auto-following so GPS does not pull the map away from the plant
+    setIsFollowing(false);
+    isFollowingRef.current = false;
+    hasUserPannedOrZoomedRef.current = true;
+
+    // Center map smoothly on the plant's saved coordinates
+    map.setView([targetCoordinates.lat, targetCoordinates.lng], 17, { animate: true });
+    setActiveItem({ type: 'plant', plant });
+
+    // Open popup after map layout settles and invalidate size for tab visibility
+    const t1 = setTimeout(() => {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.invalidateSize();
+        mapInstanceRef.current.setView([targetCoordinates.lat, targetCoordinates.lng], 17);
+        marker.openPopup();
+      }
+    }, 250);
+
+    const t2 = setTimeout(() => {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.invalidateSize();
+        mapInstanceRef.current.setView([targetCoordinates.lat, targetCoordinates.lng], 17);
+      }
+    }, 500);
+
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [effectiveSelectedPlant, targetCoordinates, isActive]);
 
   // Formatters for route distance and duration
   const formatRouteDistance = (meters: number): string => {
@@ -2370,10 +2606,47 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
         {/* Map Layout Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
           {/* Map Canvas */}
-          <div className="lg:col-span-8 bg-white rounded-3xl border border-stone-200 overflow-hidden shadow-xs h-[480px] sm:h-[560px] relative">
+          <div
+            className={
+              isMapFullscreen
+                ? 'fixed inset-0 z-[9999] w-screen h-screen m-0 p-0 rounded-none border-none bg-stone-900 overflow-hidden'
+                : 'lg:col-span-8 bg-white rounded-3xl border border-stone-200 overflow-hidden shadow-xs h-[480px] sm:h-[560px] relative'
+            }
+          >
             <div ref={mapContainerRef} className="w-full h-full z-10" />
 
-            {/* In-canvas Map / Satellite View Toggle */}
+            {/* Fullscreen Floating Header Pill with Done / Collapse Button */}
+            {isMapFullscreen && (
+              <div className="absolute top-3 left-3 z-[1000] max-w-[calc(100%-250px)] sm:max-w-md bg-white/95 backdrop-blur-md px-3 py-1.5 sm:py-2 rounded-xl border border-stone-300 shadow-md flex items-center justify-between gap-2.5 text-xs pointer-events-auto animate-in fade-in duration-150">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Compass className="w-4 h-4 text-emerald-700 shrink-0" />
+                  <div className="min-w-0">
+                    <div className="font-bold text-stone-900 truncate">
+                      {activeItem?.type === 'plant' && activeItem.plant
+                        ? activeItem.plant.commonName
+                        : activeItem?.type === 'inat' && activeItem.inat
+                        ? (activeItem.inat.commonName || activeItem.inat.scientificName)
+                        : activeItem?.type === 'community' && activeItem.community
+                        ? activeItem.community.commonName
+                        : 'Interactive Flora Map'}
+                    </div>
+                    <div className="text-[10px] text-stone-500 truncate hidden xs:block">
+                      Fullscreen mode • Press Esc to return
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsMapFullscreen(false)}
+                  className="px-2.5 py-1 bg-emerald-800 hover:bg-emerald-900 active:scale-95 text-white rounded-lg text-xs font-semibold cursor-pointer shrink-0 transition-all shadow-xs"
+                  title="Return to standard page layout"
+                >
+                  Done
+                </button>
+              </div>
+            )}
+
+            {/* In-canvas Map / Satellite View Toggle & Fullscreen Expand/Collapse */}
             <div className="absolute top-3 right-3 z-[1000] pointer-events-auto flex items-center bg-white/95 backdrop-blur-md p-1 rounded-2xl border border-stone-300 shadow-md">
               <button
                 type="button"
@@ -2410,6 +2683,30 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               >
                 <Globe className="w-3.5 h-3.5" />
                 <span>Satellite</span>
+              </button>
+              <div className="w-px h-4 bg-stone-300 mx-1" />
+              <button
+                type="button"
+                onMouseDown={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsMapFullscreen((prev) => !prev);
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer select-none ${
+                  isMapFullscreen
+                    ? 'bg-emerald-800 text-white shadow-xs'
+                    : 'text-stone-700 hover:text-stone-950 hover:bg-stone-100/90'
+                }`}
+                title={isMapFullscreen ? 'Collapse map to normal layout (Esc)' : 'Expand map to fullscreen'}
+                aria-label={isMapFullscreen ? 'Collapse map to normal layout' : 'Expand map to fullscreen'}
+              >
+                {isMapFullscreen ? (
+                  <Minimize2 className="w-3.5 h-3.5 text-current" />
+                ) : (
+                  <Maximize2 className="w-3.5 h-3.5 text-current" />
+                )}
+                <span>{isMapFullscreen ? 'Collapse' : 'Expand'}</span>
               </button>
             </div>
 
@@ -3079,8 +3376,9 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
             ) : activeItem?.type === 'plant' && activeItem.plant ? (
               <div className="bg-white rounded-3xl border border-stone-200 p-6 shadow-xs flex flex-col justify-between h-full space-y-4">
                 <div>
-                  <div className="text-[10px] font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 uppercase tracking-wider mb-2 inline-block">
-                    Demo Campus Specimen
+                  <div className="text-[10px] font-bold text-emerald-900 bg-emerald-50 px-2.5 py-0.5 rounded border border-emerald-200 uppercase tracking-wider mb-2 inline-flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>
+                    <span>{activeItem.plant.category || 'Botanical'} Specimen</span>
                   </div>
                   <div className="aspect-[16/10] rounded-2xl overflow-hidden mb-3 bg-stone-100 border border-stone-200">
                     <img
@@ -3127,13 +3425,15 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                 <div className="pt-2 space-y-2">
                   <button
                     type="button"
-                    onClick={() =>
+                    onClick={() => {
+                      if (!activeItem.plant?.coordinates) return;
                       handleStartNavigation(
-                        activeItem.plant!.coordinates,
-                        activeItem.plant!.commonName
-                      )
-                    }
-                    disabled={isCalculatingRoute}
+                        activeItem.plant.coordinates,
+                        activeItem.plant.commonName
+                      );
+                    }}
+                    disabled={!activeItem.plant?.coordinates || isCalculatingRoute}
+                    title={!activeItem.plant?.coordinates ? 'No geographic coordinates recorded for this specimen' : undefined}
                     className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-md hover:shadow-lg transition-all cursor-pointer"
                   >
                     {isCalculatingRoute ? (
@@ -3144,7 +3444,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                     ) : (
                       <>
                         <Navigation className="w-4 h-4 text-white" />
-                        <span>Start Now (Road Navigation)</span>
+                        <span>{!activeItem.plant?.coordinates ? 'No Coordinates Saved' : 'Start Now (Road Navigation)'}</span>
                       </>
                     )}
                   </button>

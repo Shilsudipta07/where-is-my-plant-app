@@ -25,6 +25,10 @@ import {
   TrendingUp,
   CheckCircle2,
   ShieldCheck,
+  Search,
+  Layers,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import { Plant } from '../types/plant';
 import { getUserProfile } from '../services/userService';
@@ -34,12 +38,14 @@ import { canEditPlant, canDeletePlant, isWebsiteOwnerUid } from '../config/owner
 import { updatePlantInFirestore, deletePlantFromFirestore } from '../services/firestoreService';
 import {
   calculatePlantCarbon,
+  validateTrunkCircumference,
   validateTrunkDiameter,
   validateTreeHeight,
   validateTreeAge,
   validateMeasurementDate,
   CARBON_CONSTANTS,
 } from '../utils/carbonCalculation';
+import { searchPlaces, reverseGeocode, GeocodingResult } from '../services/geocodingService';
 
 interface PlantDetailsPageProps {
   plant: Plant;
@@ -85,8 +91,12 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
   const [editStudentTip, setEditStudentTip] = useState(plant.studentTip || '');
   const [editImageUrl, setEditImageUrl] = useState(plant.imageUrl || '');
   // Biometric fields
-  const [editTrunkDiameter, setEditTrunkDiameter] = useState<string>(
-    plant.trunkDiameterCm !== undefined ? String(plant.trunkDiameterCm) : ''
+  const [editTrunkCircumference, setEditTrunkCircumference] = useState<string>(
+    plant.trunkCircumferenceCm !== undefined
+      ? String(plant.trunkCircumferenceCm)
+      : plant.trunkDiameterCm !== undefined
+      ? String(Math.round(plant.trunkDiameterCm * 3.1416 * 10) / 10)
+      : ''
   );
   const [editTreeHeight, setEditTreeHeight] = useState<string>(
     plant.treeHeightM !== undefined ? String(plant.treeHeightM) : ''
@@ -97,6 +107,24 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
   const [editMeasurementDate, setEditMeasurementDate] = useState<string>(
     plant.measurementDate || ''
   );
+
+  // Edit Map interactive state & refs
+  const editMapContainerRef = useRef<HTMLDivElement | null>(null);
+  const editMapInstanceRef = useRef<L.Map | null>(null);
+  const editMarkerRef = useRef<L.Marker | null>(null);
+  const editStreetLayerRef = useRef<L.TileLayer | null>(null);
+  const editSatLayerRef = useRef<L.TileLayer | null>(null);
+  const editSatLabelsRef = useRef<L.TileLayer | null>(null);
+  const [editMapStyle, setEditMapStyle] = useState<'map' | 'satellite'>('map');
+  const [isEditMapFullscreen, setIsEditMapFullscreen] = useState<boolean>(false);
+  const [isResolvingLocation, setIsResolvingLocation] = useState<boolean>(false);
+  const [resolvedAddressNote, setResolvedAddressNote] = useState<string | null>(null);
+  const [editPlaceQuery, setEditPlaceQuery] = useState<string>('');
+  const [editPlaceResults, setEditPlaceResults] = useState<GeocodingResult[]>([]);
+  const [isSearchingEditPlaces, setIsSearchingEditPlaces] = useState<boolean>(false);
+  const [editPlaceSearchError, setEditPlaceSearchError] = useState<string | null>(null);
+  const editPlaceAbortRef = useRef<AbortController | null>(null);
+  const reverseGeocodeAbortRef = useRef<AbortController | null>(null);
 
   // Subscribe to auth state changes to detect sign-in / Google linking
   useEffect(() => {
@@ -122,10 +150,20 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
     setEditDescription(plant.description || '');
     setEditStudentTip(plant.studentTip || '');
     setEditImageUrl(plant.imageUrl || '');
-    setEditTrunkDiameter(plant.trunkDiameterCm !== undefined ? String(plant.trunkDiameterCm) : '');
+    setEditTrunkCircumference(
+      plant.trunkCircumferenceCm !== undefined
+        ? String(plant.trunkCircumferenceCm)
+        : plant.trunkDiameterCm !== undefined
+        ? String(Math.round(plant.trunkDiameterCm * 3.1416 * 10) / 10)
+        : ''
+    );
     setEditTreeHeight(plant.treeHeightM !== undefined ? String(plant.treeHeightM) : '');
     setEditTreeAge(plant.treeAgeYears !== undefined ? String(plant.treeAgeYears) : '');
     setEditMeasurementDate(plant.measurementDate || '');
+    setEditPlaceQuery('');
+    setEditPlaceResults([]);
+    setEditPlaceSearchError(null);
+    setResolvedAddressNote(null);
     setEditError(null);
     setIsEditModalOpen(true);
   };
@@ -137,6 +175,11 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
 
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
+  const [isPreviewMapFullscreen, setIsPreviewMapFullscreen] = useState<boolean>(false);
+  const [previewMapStyle, setPreviewMapStyle] = useState<'map' | 'satellite'>('map');
+  const previewStreetLayerRef = useRef<L.TileLayer | null>(null);
+  const previewSatLayerRef = useRef<L.TileLayer | null>(null);
+  const previewSatLabelsRef = useRef<L.TileLayer | null>(null);
 
   // Look up GBIF species / taxonomy information
   // Uses existing scientificName if present; otherwise matches commonName via existing GBIF service
@@ -212,10 +255,30 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
         scrollWheelZoom: false,
       });
 
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      const streetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 19,
         attribution: '&copy; OpenStreetMap contributors',
-      }).addTo(map);
+      });
+      previewStreetLayerRef.current = streetLayer;
+
+      const satelliteLayer = L.tileLayer(
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        { maxZoom: 19, attribution: 'Tiles &copy; Esri' }
+      );
+      previewSatLayerRef.current = satelliteLayer;
+
+      const satelliteLabelsLayer = L.tileLayer(
+        'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+        { maxZoom: 19 }
+      );
+      previewSatLabelsRef.current = satelliteLabelsLayer;
+
+      if (previewMapStyle === 'satellite') {
+        satelliteLayer.addTo(map);
+        satelliteLabelsLayer.addTo(map);
+      } else {
+        streetLayer.addTo(map);
+      }
 
       // Custom botanical marker matching app theme
       const pinIcon = L.divIcon({
@@ -270,6 +333,76 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [plant.id]);
+
+  // Switch Preview Map tile style between Map and Satellite
+  const handleSwitchPreviewMapStyle = (style: 'map' | 'satellite') => {
+    setPreviewMapStyle(style);
+    const map = mapInstanceRef.current;
+    if (!map) return;
+    const street = previewStreetLayerRef.current;
+    const sat = previewSatLayerRef.current;
+    const labels = previewSatLabelsRef.current;
+    if (style === 'satellite') {
+      if (street && map.hasLayer(street)) map.removeLayer(street);
+      if (sat && !map.hasLayer(sat)) map.addLayer(sat);
+      if (labels && !map.hasLayer(labels)) map.addLayer(labels);
+      sat?.bringToBack();
+    } else {
+      if (sat && map.hasLayer(sat)) map.removeLayer(sat);
+      if (labels && map.hasLayer(labels)) map.removeLayer(labels);
+      if (street && !map.hasLayer(street)) map.addLayer(street);
+      street?.bringToBack();
+    }
+  };
+
+  // Handle resize and body scroll for preview map fullscreen
+  useEffect(() => {
+    if (isPreviewMapFullscreen) {
+      document.body.style.overflow = 'hidden';
+    } else if (!isEditModalOpen) {
+      document.body.style.overflow = '';
+    }
+    const timer1 = setTimeout(() => {
+      mapInstanceRef.current?.invalidateSize();
+    }, 100);
+    const timer2 = setTimeout(() => {
+      mapInstanceRef.current?.invalidateSize();
+    }, 300);
+    return () => {
+      clearTimeout(timer1);
+      clearTimeout(timer2);
+      if (!isEditModalOpen) document.body.style.overflow = '';
+    };
+  }, [isPreviewMapFullscreen, isEditModalOpen]);
+
+  // Handle resize for edit modal map fullscreen
+  useEffect(() => {
+    const timer1 = setTimeout(() => {
+      editMapInstanceRef.current?.invalidateSize();
+    }, 100);
+    const timer2 = setTimeout(() => {
+      editMapInstanceRef.current?.invalidateSize();
+    }, 300);
+    return () => {
+      clearTimeout(timer1);
+      clearTimeout(timer2);
+    };
+  }, [isEditMapFullscreen]);
+
+  // Escape key handler for fullscreen maps
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (isEditMapFullscreen) {
+          setIsEditMapFullscreen(false);
+        } else if (isPreviewMapFullscreen) {
+          setIsPreviewMapFullscreen(false);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isEditMapFullscreen, isPreviewMapFullscreen]);
 
   // If plant has ownerUid but no ownerUsername is set, look up the username
   useEffect(() => {
@@ -361,6 +494,258 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
   // Quantitative carbon sequestration calculation
   const carbonEstimate = React.useMemo(() => calculatePlantCarbon(plant), [plant]);
 
+  // Initialize and synchronize Interactive Leaflet Map for Edit Modal
+  useEffect(() => {
+    if (!isEditModalOpen) {
+      if (editMapInstanceRef.current) {
+        editMapInstanceRef.current.remove();
+        editMapInstanceRef.current = null;
+        editMarkerRef.current = null;
+        editStreetLayerRef.current = null;
+        editSatLayerRef.current = null;
+        editSatLabelsRef.current = null;
+      }
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      if (!editMapContainerRef.current) return;
+
+      if (editMapInstanceRef.current) {
+        editMapInstanceRef.current.invalidateSize();
+        return;
+      }
+
+      const curLat = parseFloat(editLat) || plant.coordinates?.lat || 24.0988;
+      const curLng = parseFloat(editLng) || plant.coordinates?.lng || 88.2676;
+
+      const map = L.map(editMapContainerRef.current, {
+        center: [curLat, curLng],
+        zoom: 15,
+        zoomControl: true,
+        attributionControl: false,
+      });
+
+      const streetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors',
+      });
+      editStreetLayerRef.current = streetLayer;
+
+      const satelliteLayer = L.tileLayer(
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        { maxZoom: 19, attribution: 'Tiles &copy; Esri' }
+      );
+      editSatLayerRef.current = satelliteLayer;
+
+      const satelliteLabelsLayer = L.tileLayer(
+        'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+        { maxZoom: 19 }
+      );
+      editSatLabelsRef.current = satelliteLabelsLayer;
+
+      if (editMapStyle === 'satellite') {
+        satelliteLayer.addTo(map);
+        satelliteLabelsLayer.addTo(map);
+      } else {
+        streetLayer.addTo(map);
+      }
+
+      // High-contrast botanical pin marker
+      const pinIcon = L.divIcon({
+        className: 'custom-plant-pin',
+        html: `
+          <div style="position: relative; display: flex; flex-direction: column; align-items: center; transform: translate(-50%, -100%); cursor: grab;">
+            <div style="background-color: #065f46; color: white; width: 34px; height: 34px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); display: flex; align-items: center; justify-content: center; border: 2.5px solid white; box-shadow: 0 4px 10px rgba(0,0,0,0.35);">
+              <div style="transform: rotate(45deg); width: 10px; height: 10px; background-color: white; border-radius: 50%;"></div>
+            </div>
+            <div style="width: 8px; height: 3px; background: rgba(0,0,0,0.25); border-radius: 50%; margin-top: 2px;"></div>
+          </div>
+        `,
+        iconSize: [0, 0],
+        iconAnchor: [0, 0],
+      });
+
+      const marker = L.marker([curLat, curLng], {
+        draggable: true,
+        icon: pinIcon,
+      }).addTo(map);
+
+      // Auto reverse-geocode address when pin is moved or map is tapped
+      const autoResolveAddress = async (lat: number, lng: number) => {
+        if (reverseGeocodeAbortRef.current) {
+          reverseGeocodeAbortRef.current.abort();
+        }
+        const ac = new AbortController();
+        reverseGeocodeAbortRef.current = ac;
+        setIsResolvingLocation(true);
+        try {
+          const address = await reverseGeocode(lat, lng, ac.signal);
+          if (address) {
+            setEditLocationName(address);
+            setResolvedAddressNote(address);
+          }
+        } catch (err: any) {
+          if (err.name !== 'AbortError') {
+            console.warn('[EditPlant] Reverse geocoding error:', err);
+          }
+        } finally {
+          setIsResolvingLocation(false);
+        }
+      };
+
+      // Synchronize coordinates & location name when dragging marker
+      marker.on('dragend', () => {
+        const latlng = marker.getLatLng();
+        setEditLat(latlng.lat.toFixed(6));
+        setEditLng(latlng.lng.toFixed(6));
+        autoResolveAddress(latlng.lat, latlng.lng);
+      });
+
+      // Synchronize coordinates & location name when tapping / clicking map
+      map.on('click', (e: L.LeafletMouseEvent) => {
+        const { lat, lng } = e.latlng;
+        marker.setLatLng([lat, lng]);
+        setEditLat(lat.toFixed(6));
+        setEditLng(lng.toFixed(6));
+        autoResolveAddress(lat, lng);
+      });
+
+      editMapInstanceRef.current = map;
+      editMarkerRef.current = marker;
+
+      // Invalidate size across intervals to ensure responsiveness on all mobile phones
+      setTimeout(() => map.invalidateSize(), 150);
+      setTimeout(() => map.invalidateSize(), 350);
+      setTimeout(() => map.invalidateSize(), 650);
+    }, 100);
+
+    const handleResize = () => {
+      editMapInstanceRef.current?.invalidateSize();
+    };
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('resize', handleResize);
+      if (editMapInstanceRef.current) {
+        editMapInstanceRef.current.remove();
+        editMapInstanceRef.current = null;
+        editMarkerRef.current = null;
+        editStreetLayerRef.current = null;
+        editSatLayerRef.current = null;
+        editSatLabelsRef.current = null;
+      }
+    };
+  }, [isEditModalOpen]);
+
+  // Handler: Manual Latitude change in Edit Modal
+  const handleEditLatChange = (newVal: string) => {
+    setEditLat(newVal);
+    const parsedLat = parseFloat(newVal);
+    const parsedLng = parseFloat(editLng);
+    if (
+      !isNaN(parsedLat) &&
+      parsedLat >= -90 &&
+      parsedLat <= 90 &&
+      !isNaN(parsedLng) &&
+      parsedLng >= -180 &&
+      parsedLng <= 180
+    ) {
+      if (editMarkerRef.current && editMapInstanceRef.current) {
+        editMarkerRef.current.setLatLng([parsedLat, parsedLng]);
+        editMapInstanceRef.current.panTo([parsedLat, parsedLng]);
+      }
+    }
+  };
+
+  // Handler: Manual Longitude change in Edit Modal
+  const handleEditLngChange = (newVal: string) => {
+    setEditLng(newVal);
+    const parsedLat = parseFloat(editLat);
+    const parsedLng = parseFloat(newVal);
+    if (
+      !isNaN(parsedLat) &&
+      parsedLat >= -90 &&
+      parsedLat <= 90 &&
+      !isNaN(parsedLng) &&
+      parsedLng >= -180 &&
+      parsedLng <= 180
+    ) {
+      if (editMarkerRef.current && editMapInstanceRef.current) {
+        editMarkerRef.current.setLatLng([parsedLat, parsedLng]);
+        editMapInstanceRef.current.panTo([parsedLat, parsedLng]);
+      }
+    }
+  };
+
+  // Switch base map style in Edit Modal
+  const handleSwitchEditMapStyle = (style: 'map' | 'satellite') => {
+    setEditMapStyle(style);
+    const map = editMapInstanceRef.current;
+    if (!map) return;
+    const street = editStreetLayerRef.current;
+    const sat = editSatLayerRef.current;
+    const labels = editSatLabelsRef.current;
+
+    if (style === 'satellite') {
+      if (street && map.hasLayer(street)) map.removeLayer(street);
+      if (sat && !map.hasLayer(sat)) map.addLayer(sat);
+      if (labels && !map.hasLayer(labels)) map.addLayer(labels);
+      sat?.bringToBack();
+    } else {
+      if (sat && map.hasLayer(sat)) map.removeLayer(sat);
+      if (labels && map.hasLayer(labels)) map.removeLayer(labels);
+      if (street && !map.hasLayer(street)) map.addLayer(street);
+      street?.bringToBack();
+    }
+  };
+
+  // Search places inside Edit Modal
+  const handleEditPlaceSearch = async () => {
+    const q = editPlaceQuery.trim();
+    if (!q || q.length < 2) {
+      setEditPlaceSearchError('Please enter at least 2 characters to search places.');
+      return;
+    }
+    if (editPlaceAbortRef.current) {
+      editPlaceAbortRef.current.abort();
+    }
+    const ac = new AbortController();
+    editPlaceAbortRef.current = ac;
+    setIsSearchingEditPlaces(true);
+    setEditPlaceSearchError(null);
+    try {
+      const results = await searchPlaces(q, ac.signal);
+      setEditPlaceResults(results);
+      if (results.length === 0) {
+        setEditPlaceSearchError(`No places found matching "${q}". Try another location.`);
+      }
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        setEditPlaceSearchError('Unable to search places. Please check your connection.');
+      }
+    } finally {
+      setIsSearchingEditPlaces(false);
+    }
+  };
+
+  // Select place in Edit Modal
+  const handleSelectEditPlace = (place: GeocodingResult) => {
+    setEditLocationName(place.shortName || place.displayName.split(',')[0]);
+    setEditLat(place.lat.toFixed(6));
+    setEditLng(place.lng.toFixed(6));
+    setResolvedAddressNote(place.shortName);
+    setEditPlaceResults([]);
+    setEditPlaceQuery('');
+    setEditPlaceSearchError(null);
+
+    if (editMapInstanceRef.current && editMarkerRef.current) {
+      editMarkerRef.current.setLatLng([place.lat, place.lng]);
+      editMapInstanceRef.current.setView([place.lat, place.lng], 16, { animate: true });
+    }
+  };
+
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!plant.id) return;
@@ -401,9 +786,9 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
     }
 
     // Biometric field validations (optional)
-    const valDbh = validateTrunkDiameter(editTrunkDiameter);
-    if (!valDbh.isValid) {
-      setEditError(valDbh.error || 'Invalid trunk diameter.');
+    const valCirc = validateTrunkCircumference(editTrunkCircumference);
+    if (!valCirc.isValid) {
+      setEditError(valCirc.error || 'Invalid trunk circumference.');
       return;
     }
 
@@ -440,7 +825,8 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
         studentTip: editStudentTip.trim() || undefined,
         imageUrl: editImageUrl.trim() || undefined,
         coordinates: hasCoords ? { lat: parsedLat, lng: parsedLng } : plant.coordinates,
-        trunkDiameterCm: valDbh.value,
+        trunkCircumferenceCm: valCirc.value,
+        trunkDiameterCm: valCirc.calculatedDbh,
         treeHeightM: valHeight.value,
         treeAgeYears: valAge.value,
         measurementDate: valDate.value,
@@ -625,10 +1011,19 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
                 </span>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono">
                   <div className="p-2.5 bg-stone-50 rounded-xl border border-stone-200/80">
-                    <span className="text-[9px] font-sans uppercase font-bold text-stone-400 block">Trunk DBH</span>
+                    <span className="text-[9px] font-sans uppercase font-bold text-stone-400 block">Circumference</span>
                     <span className="font-bold text-stone-800 text-xs">
-                      {plant.trunkDiameterCm ? `${plant.trunkDiameterCm} cm` : 'Not recorded'}
+                      {plant.trunkCircumferenceCm
+                        ? `${plant.trunkCircumferenceCm} cm`
+                        : plant.trunkDiameterCm
+                        ? `${Math.round(plant.trunkDiameterCm * 3.1416 * 10) / 10} cm`
+                        : 'Not recorded'}
                     </span>
+                    {plant.trunkDiameterCm && (
+                      <span className="text-[9px] text-stone-400 block font-normal">
+                        DBH: {plant.trunkDiameterCm} cm
+                      </span>
+                    )}
                   </div>
                   <div className="p-2.5 bg-stone-50 rounded-xl border border-stone-200/80">
                     <span className="text-[9px] font-sans uppercase font-bold text-stone-400 block">Tree Height</span>
@@ -949,15 +1344,130 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
               {hasValidCoordinates ? (
                 <div className="space-y-3">
                   <div
-                    ref={mapContainerRef}
-                    className="w-full h-64 sm:h-72 rounded-2xl overflow-hidden border border-stone-200 shadow-inner z-0 relative"
-                    style={{ minHeight: '250px' }}
-                  />
+                    className={
+                      isPreviewMapFullscreen
+                        ? 'fixed inset-0 z-[9999] w-screen h-screen m-0 p-0 rounded-none border-none bg-stone-900 overflow-hidden flex flex-col'
+                        : 'w-full h-64 sm:h-72 rounded-2xl overflow-hidden border border-stone-200 shadow-inner z-0 relative'
+                    }
+                    style={isPreviewMapFullscreen ? undefined : { minHeight: '250px' }}
+                  >
+                    <div
+                      ref={mapContainerRef}
+                      className="w-full h-full relative z-0"
+                    />
 
-                  {onOpenInExploreMap && (
+                    {/* Fullscreen Floating Header Badge with Plant Name, Coordinates & Collapse Button */}
+                    {isPreviewMapFullscreen && (
+                      <div className="absolute top-2.5 left-2.5 z-[1000] max-w-[calc(100%-250px)] sm:max-w-md bg-white/95 backdrop-blur-md px-3.5 py-2 rounded-xl border border-stone-300 shadow-md flex items-center justify-between gap-3 text-xs pointer-events-auto animate-in fade-in duration-150">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <MapPin className="w-4 h-4 text-emerald-700 shrink-0" />
+                          <div className="min-w-0">
+                            <div className="font-bold text-stone-900 truncate">
+                              {plant.commonName || 'Plant Location'}
+                            </div>
+                            <div className="text-[10px] text-stone-600 truncate">
+                              {plant.locationName || `${plant.coordinates.lat.toFixed(5)}°, ${plant.coordinates.lng.toFixed(5)}°`}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {onOpenInExploreMap && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsPreviewMapFullscreen(false);
+                                onOpenInExploreMap(plant);
+                              }}
+                              className="px-2.5 py-1 bg-emerald-800 hover:bg-emerald-900 active:scale-95 text-white rounded-lg text-xs font-semibold cursor-pointer transition-all shadow-xs flex items-center gap-1"
+                              title="Open in full Explore Map"
+                            >
+                              <Compass className="w-3.5 h-3.5" />
+                              <span className="hidden xs:inline sm:inline">Explore Map</span>
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setIsPreviewMapFullscreen(false)}
+                            className="px-2.5 py-1 bg-stone-100 hover:bg-stone-200 active:scale-95 text-stone-800 rounded-lg text-xs font-semibold cursor-pointer transition-all shadow-xs"
+                            title="Return to details page"
+                          >
+                            Done
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* In-canvas Map / Satellite View Toggle & Expand/Collapse Fullscreen */}
+                    <div className="absolute top-2.5 right-2.5 z-[1000] pointer-events-auto flex items-center bg-white/95 backdrop-blur-md p-1 rounded-xl border border-stone-300 shadow-md">
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSwitchPreviewMapStyle('map');
+                        }}
+                        className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer select-none ${
+                          previewMapStyle === 'map'
+                            ? 'bg-emerald-800 text-white shadow-xs'
+                            : 'text-stone-700 hover:text-stone-950 hover:bg-stone-100/90'
+                        }`}
+                        title="Switch to standard OpenStreetMap view"
+                      >
+                        <Layers className="w-3.5 h-3.5" />
+                        <span>Map</span>
+                      </button>
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSwitchPreviewMapStyle('satellite');
+                        }}
+                        className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer select-none ${
+                          previewMapStyle === 'satellite'
+                            ? 'bg-emerald-800 text-white shadow-xs'
+                            : 'text-stone-700 hover:text-stone-950 hover:bg-stone-100/90'
+                        }`}
+                        title="Switch to high-resolution Satellite view"
+                      >
+                        <Globe className="w-3.5 h-3.5" />
+                        <span>Satellite</span>
+                      </button>
+                      <div className="w-px h-4 bg-stone-300 mx-1" />
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setIsPreviewMapFullscreen((prev) => !prev);
+                        }}
+                        className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer select-none ${
+                          isPreviewMapFullscreen
+                            ? 'bg-emerald-800 text-white shadow-xs'
+                            : 'text-stone-700 hover:text-stone-950 hover:bg-stone-100/90'
+                        }`}
+                        title={isPreviewMapFullscreen ? 'Collapse map to normal layout (Esc)' : 'Expand map to fullscreen'}
+                        aria-label={isPreviewMapFullscreen ? 'Collapse map to normal layout' : 'Expand map to fullscreen'}
+                      >
+                        {isPreviewMapFullscreen ? (
+                          <Minimize2 className="w-3.5 h-3.5 text-current" />
+                        ) : (
+                          <Maximize2 className="w-3.5 h-3.5 text-current" />
+                        )}
+                        <span>{isPreviewMapFullscreen ? 'Collapse' : 'Expand'}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {onOpenInExploreMap && !isPreviewMapFullscreen && (
                     <button
                       type="button"
-                      onClick={() => onOpenInExploreMap(plant)}
+                      onClick={() => {
+                        onOpenInExploreMap(plant);
+                      }}
                       className="w-full py-2.5 px-4 bg-emerald-800 hover:bg-emerald-900 active:scale-[0.99] text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer"
                     >
                       <Compass className="w-4 h-4 text-emerald-300" />
@@ -966,14 +1476,26 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
                   )}
                 </div>
               ) : (
-                <div className="p-4 rounded-2xl bg-stone-50 border border-stone-200/80 flex items-center gap-3 text-stone-500">
-                  <div className="w-8 h-8 rounded-full bg-stone-200/80 flex items-center justify-center shrink-0">
-                    <AlertCircle className="w-4 h-4 text-stone-400" />
+                <div className="p-4 rounded-2xl bg-stone-50 border border-stone-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-stone-500">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-stone-200/80 flex items-center justify-center shrink-0">
+                      <AlertCircle className="w-4 h-4 text-stone-400" />
+                    </div>
+                    <div>
+                      <p className="font-semibold text-xs text-stone-700">Location not available</p>
+                      <p className="text-[11px] text-stone-500">No valid geographic coordinates were recorded for this plant record.</p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="font-semibold text-xs text-stone-700">Location not available</p>
-                    <p className="text-[11px] text-stone-500">No valid geographic coordinates were recorded for this plant record.</p>
-                  </div>
+                  {onOpenInExploreMap && (
+                    <button
+                      type="button"
+                      onClick={() => onOpenInExploreMap(plant)}
+                      className="px-3.5 py-2 bg-stone-200 hover:bg-stone-300 active:scale-98 text-stone-800 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer self-start sm:self-auto shrink-0 shadow-2xs"
+                    >
+                      <Compass className="w-3.5 h-3.5 text-stone-600" />
+                      <span>Open in Explore Map</span>
+                    </button>
+                  )}
                 </div>
               )}
 
@@ -1193,45 +1715,298 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
                   </select>
                 </div>
 
-                {/* Location Name */}
-                <div className="space-y-1">
-                  <label className="font-semibold text-stone-700">
-                    Location Name <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={editLocationName}
-                    onChange={(e) => setEditLocationName(e.target.value)}
-                    placeholder="e.g. Campus Botanical Garden, Plot 4"
-                    className="w-full px-3 py-2 bg-stone-50 rounded-xl border border-stone-200 focus:outline-emerald-800 focus:bg-white transition-all text-xs"
-                  />
+              </div>
+
+              {/* Plant Location & Interactive Map Section */}
+              <div className="p-4 rounded-2xl bg-stone-50/70 border border-stone-200/90 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b border-stone-200/70 pb-2">
+                  <div>
+                    <label className="font-bold text-xs uppercase tracking-wider text-stone-800 flex items-center gap-1.5">
+                      <MapPin className="w-4 h-4 text-emerald-800" />
+                      <span>Observation Location &amp; Coordinates</span>
+                    </label>
+                    <p className="text-[11px] text-stone-500 mt-0.5">
+                      Drag the marker or tap the map to reposition. Latitude, longitude, and location name update automatically.
+                    </p>
+                  </div>
+                  {isResolvingLocation && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-900 text-[10px] font-semibold animate-pulse shrink-0">
+                      <Loader2 className="w-3 h-3 animate-spin text-emerald-700" />
+                      <span>Resolving address...</span>
+                    </span>
+                  )}
                 </div>
 
-                {/* Latitude */}
+                {/* Place Search Box in Edit Modal */}
                 <div className="space-y-1">
-                  <label className="font-semibold text-stone-700">Latitude (-90 to 90)</label>
-                  <input
-                    type="number"
-                    step="any"
-                    value={editLat}
-                    onChange={(e) => setEditLat(e.target.value)}
-                    placeholder="e.g. 37.7749"
-                    className="w-full px-3 py-2 bg-stone-50 rounded-xl border border-stone-200 focus:outline-emerald-800 focus:bg-white transition-all text-xs font-mono"
-                  />
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="font-semibold text-stone-700 flex items-center gap-1">
+                      <Search className="w-3.5 h-3.5 text-stone-400" />
+                      <span>Search Landmark or Place (Moves Map &amp; Pin)</span>
+                    </span>
+                    <span className="text-[10px] text-stone-400 font-mono">OpenStreetMap</span>
+                  </div>
+                  <div className="relative">
+                    <div className="flex items-center gap-2">
+                      <div className="relative flex-1">
+                        <input
+                          type="text"
+                          value={editPlaceQuery}
+                          onChange={(e) => {
+                            setEditPlaceQuery(e.target.value);
+                            setEditPlaceSearchError(null);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleEditPlaceSearch();
+                            }
+                          }}
+                          placeholder="Search real place or address to jump pin..."
+                          className="w-full px-3 py-2 text-xs bg-white rounded-xl border border-stone-200 focus:outline-emerald-800 transition-all"
+                        />
+                        {editPlaceQuery && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditPlaceQuery('');
+                              setEditPlaceResults([]);
+                              setEditPlaceSearchError(null);
+                            }}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-700 cursor-pointer"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleEditPlaceSearch}
+                        disabled={isSearchingEditPlaces || !editPlaceQuery.trim()}
+                        className="px-3 py-2 bg-emerald-800 hover:bg-emerald-900 active:scale-95 text-white rounded-xl text-xs font-semibold flex items-center gap-1 shadow-2xs transition-all cursor-pointer disabled:opacity-50 shrink-0"
+                      >
+                        {isSearchingEditPlaces ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>Finding...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Search className="w-3.5 h-3.5" />
+                            <span>Find</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    {editPlaceSearchError && (
+                      <div className="mt-1.5 p-2 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-900 flex items-center gap-1.5">
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                        <span>{editPlaceSearchError}</span>
+                      </div>
+                    )}
+
+                    {editPlaceResults.length > 0 && (
+                      <div className="mt-1.5 bg-white rounded-xl border border-stone-200 shadow-xl divide-y divide-stone-100 max-h-48 overflow-y-auto z-30 relative animate-in fade-in duration-150">
+                        {editPlaceResults.map((place) => (
+                          <button
+                            key={place.placeId}
+                            type="button"
+                            onClick={() => handleSelectEditPlace(place)}
+                            className="w-full text-left px-3 py-2 hover:bg-emerald-50 transition-colors flex items-start gap-2 group cursor-pointer"
+                          >
+                            <MapPin className="w-3.5 h-3.5 text-emerald-700 shrink-0 mt-0.5 group-hover:scale-110" />
+                            <div className="flex-1 min-w-0">
+                              <div className="text-xs font-semibold text-stone-900 truncate">
+                                {place.shortName}
+                              </div>
+                              <div className="text-[10px] text-stone-500 truncate">
+                                {place.displayName}
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
-                {/* Longitude */}
+                {/* Interactive Map Canvas */}
                 <div className="space-y-1">
-                  <label className="font-semibold text-stone-700">Longitude (-180 to 180)</label>
-                  <input
-                    type="number"
-                    step="any"
-                    value={editLng}
-                    onChange={(e) => setEditLng(e.target.value)}
-                    placeholder="e.g. -122.4194"
-                    className="w-full px-3 py-2 bg-stone-50 rounded-xl border border-stone-200 focus:outline-emerald-800 focus:bg-white transition-all text-xs font-mono"
-                  />
+                  <div className="flex items-center justify-between text-[11px] text-stone-600">
+                    <span className="font-semibold flex items-center gap-1">
+                      <Compass className="w-3.5 h-3.5 text-emerald-800" />
+                      <span>Interactive Location Map</span>
+                    </span>
+                    <span className="text-[10px] text-stone-400">
+                      Tap map or drag botanical marker
+                    </span>
+                  </div>
+
+                  <div
+                    className={
+                      isEditMapFullscreen
+                        ? 'fixed inset-0 z-[9999] w-screen h-screen m-0 p-0 rounded-none border-none bg-stone-900 overflow-hidden flex flex-col'
+                        : 'relative rounded-2xl overflow-hidden border border-stone-300 shadow-inner'
+                    }
+                  >
+                    <div
+                      ref={editMapContainerRef}
+                      className={isEditMapFullscreen ? 'w-full h-full flex-1 relative z-0' : 'h-56 sm:h-64 w-full relative z-0'}
+                      style={isEditMapFullscreen ? undefined : { minHeight: '220px' }}
+                    />
+
+                    {/* Fullscreen Floating Header Badge with Coordinates & Done Button */}
+                    {isEditMapFullscreen && (
+                      <div className="absolute top-2.5 left-2.5 z-[1000] max-w-[calc(100%-240px)] sm:max-w-md bg-white/95 backdrop-blur-md px-3 py-2 rounded-xl border border-stone-300 shadow-md flex items-center justify-between gap-2.5 text-xs pointer-events-auto animate-in fade-in duration-150">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <MapPin className="w-4 h-4 text-emerald-700 shrink-0" />
+                          <div className="min-w-0">
+                            <div className="font-bold text-stone-900 truncate">
+                              {editLocationName || 'Tap map or drag pin to adjust'}
+                            </div>
+                            <div className="text-[10px] font-mono text-stone-500 truncate">
+                              {editLat}°, {editLng}°
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setIsEditMapFullscreen(false)}
+                          className="px-2.5 py-1 bg-emerald-800 hover:bg-emerald-900 active:scale-95 text-white rounded-lg text-xs font-semibold cursor-pointer shrink-0 transition-all shadow-xs"
+                          title="Return to edit form"
+                        >
+                          Done
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Map / Satellite Toggle & Fullscreen Expand/Collapse */}
+                    <div className="absolute top-2.5 right-2.5 z-[1000] pointer-events-auto flex items-center bg-white/95 backdrop-blur-md p-1 rounded-xl border border-stone-300 shadow-md">
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSwitchEditMapStyle('map');
+                        }}
+                        className={`flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer select-none ${
+                          editMapStyle === 'map'
+                            ? 'bg-emerald-800 text-white shadow-xs'
+                            : 'text-stone-700 hover:text-stone-950 hover:bg-stone-100/90'
+                        }`}
+                      >
+                        <Layers className="w-3.5 h-3.5" />
+                        <span>Map</span>
+                      </button>
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSwitchEditMapStyle('satellite');
+                        }}
+                        className={`flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer select-none ${
+                          editMapStyle === 'satellite'
+                            ? 'bg-emerald-800 text-white shadow-xs'
+                            : 'text-stone-700 hover:text-stone-950 hover:bg-stone-100/90'
+                        }`}
+                      >
+                        <Globe className="w-3.5 h-3.5" />
+                        <span>Satellite</span>
+                      </button>
+                      <div className="w-px h-4 bg-stone-300 mx-1" />
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setIsEditMapFullscreen((prev) => !prev);
+                        }}
+                        className={`flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer select-none ${
+                          isEditMapFullscreen
+                            ? 'bg-emerald-800 text-white shadow-xs'
+                            : 'text-stone-700 hover:text-stone-950 hover:bg-stone-100/90'
+                        }`}
+                        title={isEditMapFullscreen ? 'Collapse map to edit modal (Esc)' : 'Expand map to fullscreen'}
+                        aria-label={isEditMapFullscreen ? 'Collapse map to edit modal' : 'Expand map to fullscreen'}
+                      >
+                        {isEditMapFullscreen ? (
+                          <Minimize2 className="w-3.5 h-3.5 text-current" />
+                        ) : (
+                          <Maximize2 className="w-3.5 h-3.5 text-current" />
+                        )}
+                        <span>{isEditMapFullscreen ? 'Collapse' : 'Expand'}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {resolvedAddressNote && (
+                  <div className="p-2 bg-emerald-50 border border-emerald-200 rounded-xl text-[11px] text-emerald-900 flex items-center gap-1.5 animate-in fade-in duration-150">
+                    <Check className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                    <span>Location updated: <strong className="font-semibold">{resolvedAddressNote}</strong></span>
+                  </div>
+                )}
+
+                {/* Location Name Field (Auto-updates from map drag/tap, and allows manual edit) */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <label className="font-semibold text-stone-700">
+                      Location Name <span className="text-rose-500">*</span>
+                    </label>
+                    <span className="text-[10px] text-emerald-800 font-medium">Updates automatically on pin move</span>
+                  </div>
+                  <div className="relative">
+                    <MapPin className="w-3.5 h-3.5 text-emerald-800 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="text"
+                      required
+                      value={editLocationName}
+                      onChange={(e) => {
+                        setEditLocationName(e.target.value);
+                        setResolvedAddressNote(null);
+                      }}
+                      placeholder="e.g. Berhampore, Campus Botanical Garden, Plot 4"
+                      className="w-full pl-8 pr-3 py-2 bg-white rounded-xl border border-stone-200 focus:outline-emerald-800 transition-all text-xs"
+                    />
+                  </div>
+                </div>
+
+                {/* Manual Coordinate Editing (Kept alongside map) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="font-semibold text-stone-700">Latitude (-90 to 90)</label>
+                      <span className="text-[10px] text-stone-400 font-mono">editable</span>
+                    </div>
+                    <input
+                      type="number"
+                      step="any"
+                      value={editLat}
+                      onChange={(e) => handleEditLatChange(e.target.value)}
+                      placeholder="e.g. 24.0988"
+                      className="w-full px-3 py-2 bg-white rounded-xl border border-stone-200 focus:outline-emerald-800 transition-all text-xs font-mono"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="font-semibold text-stone-700">Longitude (-180 to 180)</label>
+                      <span className="text-[10px] text-stone-400 font-mono">editable</span>
+                    </div>
+                    <input
+                      type="number"
+                      step="any"
+                      value={editLng}
+                      onChange={(e) => handleEditLngChange(e.target.value)}
+                      placeholder="e.g. 88.2676"
+                      className="w-full px-3 py-2 bg-white rounded-xl border border-stone-200 focus:outline-emerald-800 transition-all text-xs font-mono"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -1242,27 +2017,33 @@ export const PlantDetailsPage: React.FC<PlantDetailsPageProps> = ({
                   <span>Biometric &amp; Tree Carbon Measurements (Optional)</span>
                 </div>
                 <p className="text-[11px] text-stone-500 leading-relaxed">
-                  Provide trunk measurements to calculate elemental stored carbon (kg C) and CO₂e sequestration.
+                  Provide trunk circumference to calculate elemental stored carbon (kg C) and CO₂e sequestration (DBH = circumference ÷ 3.1416).
                 </p>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {/* Trunk Diameter (DBH in cm) */}
+                  {/* Trunk Circumference (cm) */}
                   <div className="space-y-1">
                     <label className="font-semibold text-stone-700 flex items-center gap-1">
                       <Ruler className="w-3.5 h-3.5 text-emerald-800" />
-                      <span>Trunk Diameter / DBH (cm)</span>
+                      <span>Trunk Circumference (cm)</span>
                     </label>
                     <input
                       type="number"
                       step="0.1"
-                      min="0.5"
-                      max="500"
-                      value={editTrunkDiameter}
-                      onChange={(e) => setEditTrunkDiameter(e.target.value)}
-                      placeholder="e.g. 32.5"
+                      min="1"
+                      max="1600"
+                      value={editTrunkCircumference}
+                      onChange={(e) => setEditTrunkCircumference(e.target.value)}
+                      placeholder="e.g. 102"
                       className="w-full px-3 py-2 bg-white rounded-xl border border-stone-200 focus:outline-emerald-800 transition-all text-xs font-mono"
                     />
-                    <span className="text-[10px] text-stone-400 block">Measured at breast height (~1.37m)</span>
+                    {editTrunkCircumference && !isNaN(parseFloat(editTrunkCircumference)) && parseFloat(editTrunkCircumference) > 0 ? (
+                      <span className="text-[10px] text-emerald-800 font-medium block">
+                        DBH ≈ {(parseFloat(editTrunkCircumference) / 3.1416).toFixed(1)} cm (used for allometric carbon calculations)
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-stone-400 block">Measured at breast height (~1.37m), DBH = circumference ÷ 3.1416</span>
+                    )}
                   </div>
 
                   {/* Tree Height (m) */}

@@ -37,7 +37,8 @@ export interface Plant {
   ownerUid?: string; // Firebase Authentication UID of the uploader
   ownerUsername?: string; // Naturalist username at time of upload or dynamic lookup
   // Biometric & Carbon Sequestration measurements (all optional)
-  trunkDiameterCm?: number; // Trunk diameter / DBH at breast height (1.37m) in cm
+  trunkCircumferenceCm?: number; // Trunk circumference at breast height (1.37m) in cm
+  trunkDiameterCm?: number; // Trunk diameter / DBH at breast height (1.37m) in cm (DBH = circumference / 3.1416)
   treeHeightM?: number; // Total tree height in meters
   treeAgeYears?: number; // Known or estimated tree age in years
   measurementDate?: string; // Biometric measurement date (YYYY-MM-DD)

@@ -86,6 +86,41 @@ export function validateTrunkDiameter(val: unknown): { isValid: boolean; value?:
 }
 
 /**
+ * Calculates DBH from trunk circumference: DBH = circumference ÷ 3.1416
+ */
+export function calculateDbhFromCircumference(circumferenceCm: number): number {
+  return Math.round((circumferenceCm / 3.1416) * 100) / 100;
+}
+
+/**
+ * Validates trunk circumference at breast height in centimeters.
+ * Automatically computes diameter at breast height (DBH = circumference ÷ 3.1416).
+ */
+export function validateTrunkCircumference(val: unknown): {
+  isValid: boolean;
+  value?: number;
+  calculatedDbh?: number;
+  error?: string;
+} {
+  if (val === undefined || val === null || val === '') {
+    return { isValid: true, value: undefined, calculatedDbh: undefined }; // Optional field
+  }
+  const num = typeof val === 'number' ? val : parseFloat(String(val).trim());
+  if (isNaN(num)) {
+    return { isValid: false, error: 'Trunk circumference must be a valid number.' };
+  }
+  if (num <= 0) {
+    return { isValid: false, error: 'Trunk circumference must be greater than 0 cm.' };
+  }
+  if (num > 1600) {
+    return { isValid: false, error: 'Trunk circumference cannot exceed 1600 cm.' };
+  }
+  const roundedCircumference = Math.round(num * 100) / 100;
+  const calculatedDbh = calculateDbhFromCircumference(roundedCircumference);
+  return { isValid: true, value: roundedCircumference, calculatedDbh };
+}
+
+/**
  * Validates tree height in meters.
  */
 export function validateTreeHeight(val: unknown): { isValid: boolean; value?: number; error?: string } {
@@ -181,14 +216,20 @@ export function calculatePlantCarbon(plant: Plant): CarbonEstimateResult {
   }
 
   // 2. Check Data Sufficiency
-  const dbh = plant.trunkDiameterCm;
+  // DBH: if circumference provided, calculate DBH = circumference / 3.1416; else fallback to legacy trunkDiameterCm
+  let dbh: number | undefined;
+  if (plant.trunkCircumferenceCm !== undefined && plant.trunkCircumferenceCm !== null && !isNaN(plant.trunkCircumferenceCm) && plant.trunkCircumferenceCm > 0) {
+    dbh = calculateDbhFromCircumference(plant.trunkCircumferenceCm);
+  } else if (plant.trunkDiameterCm !== undefined && plant.trunkDiameterCm !== null && !isNaN(plant.trunkDiameterCm) && plant.trunkDiameterCm > 0) {
+    dbh = plant.trunkDiameterCm;
+  }
   const height = plant.treeHeightM;
   const age = plant.treeAgeYears;
 
   if (dbh === undefined || dbh === null || isNaN(dbh) || dbh <= 0) {
     return {
       status: 'insufficient_data',
-      statusReason: 'Insufficient data: Trunk diameter at breast height (DBH in cm) is required to calculate tree biomass and carbon.',
+      statusReason: 'Insufficient data: Trunk circumference or DBH is required to calculate tree biomass and carbon.',
       storedCarbonKg: null,
       storedCo2eKg: null,
       annualAbsorptionCo2eKg: null,

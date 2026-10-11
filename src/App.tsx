@@ -174,16 +174,34 @@ export default function App() {
   };
 
   const handleShowOnMap = (plant: Plant) => {
-    setSelectedMapPlant(plant);
-    if (activeTab === 'home') {
-      const mapSection = document.getElementById('explore-map');
-      if (mapSection) {
-        mapSection.scrollIntoView({ behavior: 'smooth' });
-      }
-    } else {
+    if (!plant) return;
+    const coords = plant.coordinates;
+    const hasValidCoords = Boolean(
+      coords &&
+      typeof coords.lat === 'number' &&
+      typeof coords.lng === 'number' &&
+      !isNaN(coords.lat) &&
+      !isNaN(coords.lng) &&
+      coords.lat >= -90 &&
+      coords.lat <= 90 &&
+      coords.lng >= -180 &&
+      coords.lng <= 180
+    );
+
+    if (!hasValidCoords) {
+      showToast(`"${plant.commonName || 'Plant'}" has no saved coordinates. Opening Explore Map.`);
+      setSelectedMapPlant({ ...plant, coordinates: undefined as any });
+      setIsNearMeActive(false);
       setActiveTab('map');
       window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
     }
+
+    // Pass a fresh reference so that map effects always re-center even if re-selecting the same plant
+    setSelectedMapPlant({ ...plant });
+    setIsNearMeActive(false);
+    setActiveTab('map');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleAddPlant = (newPlant: Plant) => {
@@ -239,6 +257,8 @@ export default function App() {
             <ExploreMap
               plants={plants}
               selectedPlant={selectedMapPlant}
+              selectedPlantId={selectedMapPlant?.id}
+              selectedPlantCoordinates={selectedMapPlant?.coordinates}
               onSelectPlant={(plant) => handleOpenPlantDetails(plant)}
               userLocation={userLocation}
               onLocateUser={handleFindNearMe}
@@ -363,6 +383,8 @@ export default function App() {
             <ExploreMap
               plants={plants}
               selectedPlant={selectedMapPlant}
+              selectedPlantId={selectedMapPlant?.id}
+              selectedPlantCoordinates={selectedMapPlant?.coordinates}
               onSelectPlant={(plant) => handleOpenPlantDetails(plant)}
               userLocation={userLocation}
               onLocateUser={handleFindNearMe}

@@ -114,7 +114,18 @@ function mapDocToPlant(docSnap: QueryDocumentSnapshot<DocumentData>): Plant {
     isUserAdded: true,
     ownerUid: data.ownerUid || undefined,
     ownerUsername: data.ownerUsername || undefined,
-    trunkDiameterCm: typeof data.trunkDiameterCm === 'number' ? data.trunkDiameterCm : undefined,
+    trunkCircumferenceCm:
+      typeof data.trunkCircumferenceCm === 'number'
+        ? data.trunkCircumferenceCm
+        : typeof data.trunkDiameterCm === 'number'
+        ? Math.round(data.trunkDiameterCm * 3.1416 * 10) / 10
+        : undefined,
+    trunkDiameterCm:
+      typeof data.trunkDiameterCm === 'number'
+        ? data.trunkDiameterCm
+        : typeof data.trunkCircumferenceCm === 'number'
+        ? Math.round((data.trunkCircumferenceCm / 3.1416) * 100) / 100
+        : undefined,
     treeHeightM: typeof data.treeHeightM === 'number' ? data.treeHeightM : undefined,
     treeAgeYears: typeof data.treeAgeYears === 'number' ? data.treeAgeYears : undefined,
     measurementDate: typeof data.measurementDate === 'string' ? data.measurementDate : undefined,

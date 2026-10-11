@@ -5,7 +5,7 @@ import lavenderImg from '../assets/images/plant_lavender_wildflower_179016710921
 import { addPlantToFirestore } from '../services/firestoreService';
 import { compressImageFile } from '../utils/imageUtils';
 import {
-  validateTrunkDiameter,
+  validateTrunkCircumference,
   validateTreeHeight,
   validateTreeAge,
   validateMeasurementDate,
@@ -36,7 +36,7 @@ export const AddPlantModal: React.FC<AddPlantModalProps> = ({
   const [previewImage, setPreviewImage] = useState<string>(lavenderImg);
 
   // Optional biometric measurement state for allometric carbon calculations
-  const [trunkDiameterCm, setTrunkDiameterCm] = useState<string>('');
+  const [trunkCircumferenceCm, setTrunkCircumferenceCm] = useState<string>('');
   const [treeHeightM, setTreeHeightM] = useState<string>('');
   const [treeAgeYears, setTreeAgeYears] = useState<string>('');
   const [measurementDate, setMeasurementDate] = useState<string>('');
@@ -84,7 +84,7 @@ export const AddPlantModal: React.FC<AddPlantModalProps> = ({
     setDescription('');
     setStudentTip('');
     setPreviewImage(lavenderImg);
-    setTrunkDiameterCm('');
+    setTrunkCircumferenceCm('');
     setTreeHeightM('');
     setTreeAgeYears('');
     setMeasurementDate('');
@@ -107,9 +107,9 @@ export const AddPlantModal: React.FC<AddPlantModalProps> = ({
     }
 
     // Validate optional biometric fields
-    const valDbh = validateTrunkDiameter(trunkDiameterCm);
-    if (!valDbh.isValid) {
-      setErrorMessage(valDbh.error || 'Invalid trunk diameter.');
+    const valCirc = validateTrunkCircumference(trunkCircumferenceCm);
+    if (!valCirc.isValid) {
+      setErrorMessage(valCirc.error || 'Invalid trunk circumference.');
       return;
     }
 
@@ -165,7 +165,8 @@ export const AddPlantModal: React.FC<AddPlantModalProps> = ({
         demoLocationDescription: `Student Field Sighting: ${locationName || 'Near nature reserve boundary'}`,
         sightedCount: 1,
         isUserAdded: true,
-        trunkDiameterCm: valDbh.value,
+        trunkCircumferenceCm: valCirc.value,
+        trunkDiameterCm: valCirc.calculatedDbh,
         treeHeightM: valHeight.value,
         treeAgeYears: valAge.value,
         measurementDate: valDate.value,
@@ -470,19 +471,24 @@ export const AddPlantModal: React.FC<AddPlantModalProps> = ({
                 <div>
                   <label className="block text-[10px] font-bold text-stone-700 mb-1 flex items-center gap-1">
                     <Ruler className="w-3 h-3 text-emerald-700" />
-                    <span>Trunk DBH (cm)</span>
+                    <span>Trunk Circumference (cm)</span>
                   </label>
                   <input
                     type="number"
                     step="0.1"
-                    min="0.5"
-                    max="500"
+                    min="1"
+                    max="1600"
                     disabled={isSubmitting}
-                    value={trunkDiameterCm}
-                    onChange={(e) => setTrunkDiameterCm(e.target.value)}
-                    placeholder="e.g. 32.5"
+                    value={trunkCircumferenceCm}
+                    onChange={(e) => setTrunkCircumferenceCm(e.target.value)}
+                    placeholder="e.g. 102"
                     className="w-full px-2.5 py-1.5 text-xs bg-white rounded-xl border border-stone-300 focus:outline-none focus:border-emerald-700 font-mono disabled:opacity-60"
                   />
+                  {trunkCircumferenceCm && !isNaN(parseFloat(trunkCircumferenceCm)) && parseFloat(trunkCircumferenceCm) > 0 && (
+                    <span className="text-[9px] text-emerald-800 font-medium mt-0.5 block">
+                      DBH ≈ {(parseFloat(trunkCircumferenceCm) / 3.1416).toFixed(1)} cm
+                    </span>
+                  )}
                 </div>
 
                 <div>

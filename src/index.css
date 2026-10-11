@@ -38,16 +38,13 @@
   z-index: 500;
 }
 
-.custom-botanical-pin {
-  background: transparent !important;
-  border: none !important;
-}
-
-.real-data-pin {
-  background: transparent !important;
-  border: none !important;
-}
-
+.leaflet-div-icon,
+.custom-botanical-pin,
+.selected-plant-highlight-pin,
+.demo-pin,
+.real-inat-pin,
+.community-obs-pin,
+.real-data-pin,
 .user-location-pin {
   background: transparent !important;
   border: none !important;

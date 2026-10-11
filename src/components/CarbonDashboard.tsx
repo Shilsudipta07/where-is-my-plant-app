@@ -371,13 +371,19 @@ export const CarbonDashboard: React.FC<CarbonDashboardProps> = ({
                         {/* Biometrics */}
                         <td className="py-3.5 px-3 font-mono text-[11px]">
                           {plant.category === 'Tree' ? (
-                            plant.trunkDiameterCm ? (
+                            plant.trunkDiameterCm || plant.trunkCircumferenceCm ? (
                               <div className="space-y-0.5">
                                 <div>
                                   <span className="font-semibold text-stone-900">
-                                    {plant.trunkDiameterCm} cm
-                                  </span>{' '}
-                                  <span className="text-stone-400 font-sans text-[10px]">DBH</span>
+                                    {plant.trunkCircumferenceCm
+                                      ? `${plant.trunkCircumferenceCm} cm circ`
+                                      : `${plant.trunkDiameterCm} cm DBH`}
+                                  </span>
+                                  {plant.trunkCircumferenceCm && plant.trunkDiameterCm && (
+                                    <span className="text-stone-400 font-sans text-[10px] ml-1">
+                                      (DBH {plant.trunkDiameterCm} cm)
+                                    </span>
+                                  )}
                                 </div>
                                 <div className="text-stone-500 text-[10px] font-sans">
                                   {plant.treeHeightM ? `${plant.treeHeightM} m height` : 'Height: N/A'}
@@ -386,7 +392,7 @@ export const CarbonDashboard: React.FC<CarbonDashboardProps> = ({
                               </div>
                             ) : (
                               <span className="text-amber-700 bg-amber-50 px-2 py-0.5 rounded text-[10px] font-sans font-medium">
-                                Missing DBH
+                                Missing circumference / DBH
                               </span>
                             )
                           ) : (

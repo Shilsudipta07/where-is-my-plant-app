@@ -24,6 +24,10 @@ import {
   Globe,
   TreeDeciduous,
   Ruler,
+  Search,
+  X,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import lavenderImg from '../assets/images/plant_lavender_wildflower_1790167109212.jpg';
 import { DEMO_CAMPUS_CENTER } from '../data/samplePlants';
@@ -40,11 +44,12 @@ import {
 } from '../services/authService';
 import { compressImageFile } from '../utils/imageUtils';
 import {
-  validateTrunkDiameter,
+  validateTrunkCircumference,
   validateTreeHeight,
   validateTreeAge,
   validateMeasurementDate,
 } from '../utils/carbonCalculation';
+import { searchPlaces, reverseGeocode, GeocodingResult } from '../services/geocodingService';
 
 interface SubmitPlantPageProps {
   onBackToHome: () => void;
@@ -87,7 +92,7 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
   const [photoError, setPhotoError] = useState<string | null>(null);
 
   // Optional biometric measurement state for allometric carbon calculations
-  const [trunkDiameterCm, setTrunkDiameterCm] = useState<string>('');
+  const [trunkCircumferenceCm, setTrunkCircumferenceCm] = useState<string>('');
   const [treeHeightM, setTreeHeightM] = useState<string>('');
   const [treeAgeYears, setTreeAgeYears] = useState<string>('');
   const [measurementDate, setMeasurementDate] = useState<string>('');
@@ -104,14 +109,54 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
   const [gpsSuccess, setGpsSuccess] = useState(Boolean(userLocation));
   const [gpsError, setGpsError] = useState<string | null>(null);
 
+  // Place Search State (OpenStreetMap Nominatim search)
+  const [placeQuery, setPlaceQuery] = useState<string>('');
+  const [placeResults, setPlaceResults] = useState<GeocodingResult[]>([]);
+  const [isSearchingPlaces, setIsSearchingPlaces] = useState<boolean>(false);
+  const [placeSearchError, setPlaceSearchError] = useState<string | null>(null);
+  const [hasSearchedPlaces, setHasSearchedPlaces] = useState<boolean>(false);
+  const placeSearchAbortRef = useRef<AbortController | null>(null);
+
   // Leaflet map refs
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markerRef = useRef<L.Marker | null>(null);
   const [mapStyle, setMapStyle] = useState<'map' | 'satellite'>('map');
+  const [isMapFullscreen, setIsMapFullscreen] = useState<boolean>(false);
   const streetTileLayerRef = useRef<L.TileLayer | null>(null);
   const satelliteTileLayerRef = useRef<L.TileLayer | null>(null);
   const satelliteLabelsLayerRef = useRef<L.TileLayer | null>(null);
+
+  // Resize Leaflet and handle body scroll lock when expanding or collapsing fullscreen
+  useEffect(() => {
+    if (isMapFullscreen) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    const timer1 = setTimeout(() => {
+      mapInstanceRef.current?.invalidateSize();
+    }, 100);
+    const timer2 = setTimeout(() => {
+      mapInstanceRef.current?.invalidateSize();
+    }, 300);
+    return () => {
+      clearTimeout(timer1);
+      clearTimeout(timer2);
+      document.body.style.overflow = '';
+    };
+  }, [isMapFullscreen]);
+
+  // Escape key collapses fullscreen
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isMapFullscreen) {
+        setIsMapFullscreen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isMapFullscreen]);
 
   // Switch base map style between OpenStreetMap and Esri World Imagery
   const handleSwitchMapStyle = (style: 'map' | 'satellite') => {
@@ -457,6 +502,57 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
     }
   };
 
+  // Handler: Search real places using Nominatim
+  const handlePlaceSearch = async () => {
+    const q = placeQuery.trim();
+    if (!q || q.length < 2) {
+      setPlaceSearchError('Please enter at least 2 characters to search places.');
+      return;
+    }
+
+    if (placeSearchAbortRef.current) {
+      placeSearchAbortRef.current.abort();
+    }
+    const abortController = new AbortController();
+    placeSearchAbortRef.current = abortController;
+
+    setIsSearchingPlaces(true);
+    setPlaceSearchError(null);
+    setHasSearchedPlaces(true);
+
+    try {
+      const results = await searchPlaces(q, abortController.signal);
+      setPlaceResults(results);
+      if (results.length === 0) {
+        setPlaceSearchError(`No places found matching "${q}". Try a different landmark or city name.`);
+      }
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        setPlaceSearchError('Unable to search places. Please check your connection and try again.');
+      }
+    } finally {
+      setIsSearchingPlaces(false);
+    }
+  };
+
+  // Handler: Select a place from search results
+  const handleSelectPlace = (place: GeocodingResult) => {
+    setLocationName(place.shortName || place.displayName.split(',')[0]);
+    setLatInput(place.lat.toFixed(6));
+    setLngInput(place.lng.toFixed(6));
+    setLocationSource('map');
+    setGpsSuccess(false);
+    setGpsError(null);
+    setPlaceResults([]);
+    setHasSearchedPlaces(false);
+    setPlaceQuery('');
+
+    if (mapInstanceRef.current && markerRef.current) {
+      markerRef.current.setLatLng([place.lat, place.lng]);
+      mapInstanceRef.current.setView([place.lat, place.lng], 16, { animate: true });
+    }
+  };
+
   const resetForm = () => {
     setCommonName('');
     setScientificName('');
@@ -473,10 +569,14 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
     setHasCustomPhoto(false);
     setPhotoError(null);
     setSubmitError(null);
-    setTrunkDiameterCm('');
+    setTrunkCircumferenceCm('');
     setTreeHeightM('');
     setTreeAgeYears('');
     setMeasurementDate('');
+    setPlaceQuery('');
+    setPlaceResults([]);
+    setPlaceSearchError(null);
+    setHasSearchedPlaces(false);
     const parsedLat = parseFloat(defaultLat);
     const parsedLng = parseFloat(defaultLng);
     if (markerRef.current && mapInstanceRef.current && !isNaN(parsedLat) && !isNaN(parsedLng)) {
@@ -532,9 +632,9 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
     }
 
     // Validate optional biometric fields
-    const valDbh = validateTrunkDiameter(trunkDiameterCm);
-    if (!valDbh.isValid) {
-      setSubmitError(valDbh.error || 'Invalid trunk diameter.');
+    const valCirc = validateTrunkCircumference(trunkCircumferenceCm);
+    if (!valCirc.isValid) {
+      setSubmitError(valCirc.error || 'Invalid trunk circumference.');
       return;
     }
 
@@ -591,7 +691,8 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
         isUserAdded: true,
         ownerUid: currentUid,
         ownerUsername: authState.profile?.username ? `@${authState.profile.username}` : undefined,
-        trunkDiameterCm: valDbh.value,
+        trunkCircumferenceCm: valCirc.value,
+        trunkDiameterCm: valCirc.calculatedDbh,
         treeHeightM: valHeight.value,
         treeAgeYears: valAge.value,
         measurementDate: valDate.value,
@@ -980,29 +1081,35 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
                   </span>
                 </div>
                 <p className="text-[11px] text-stone-600 leading-relaxed">
-                  For woody tree species, recording trunk diameter enables calculating stored carbon (kg C), CO₂e, and annual absorption.
+                  For woody tree species, recording trunk circumference enables calculating stored carbon (kg C), CO₂e, and annual absorption.
                   All fields are strictly optional.
                 </p>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
-                  {/* Trunk Diameter / DBH */}
+                  {/* Trunk Circumference (cm) */}
                   <div>
                     <label className="block text-[11px] font-bold text-stone-700 mb-1 flex items-center gap-1">
                       <Ruler className="w-3.5 h-3.5 text-emerald-700" />
-                      <span>Trunk DBH (cm)</span>
+                      <span>Trunk Circumference (cm)</span>
                     </label>
                     <input
                       type="number"
                       step="0.1"
-                      min="0.5"
-                      max="500"
+                      min="1"
+                      max="1600"
                       disabled={isSubmitting}
-                      value={trunkDiameterCm}
-                      onChange={(e) => setTrunkDiameterCm(e.target.value)}
-                      placeholder="e.g. 32.5"
+                      value={trunkCircumferenceCm}
+                      onChange={(e) => setTrunkCircumferenceCm(e.target.value)}
+                      placeholder="e.g. 102"
                       className="w-full px-3 py-2 text-xs text-stone-900 bg-white border border-stone-200 rounded-xl focus:outline-none focus:border-emerald-600 font-mono transition-colors disabled:opacity-60"
                     />
-                    <span className="text-[10px] text-stone-400 mt-0.5 block">Diameter at ~1.37m height</span>
+                    {trunkCircumferenceCm && !isNaN(parseFloat(trunkCircumferenceCm)) && parseFloat(trunkCircumferenceCm) > 0 ? (
+                      <span className="text-[10px] text-emerald-800 font-medium mt-0.5 block">
+                        DBH ≈ {(parseFloat(trunkCircumferenceCm) / 3.1416).toFixed(1)} cm
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-stone-400 mt-0.5 block">DBH = circumference ÷ 3.1416</span>
+                    )}
                   </div>
 
                   {/* Tree Height */}
@@ -1169,6 +1276,110 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
                   </div>
                 </div>
 
+                {/* Place Search Box Directly Above Add Plant Map */}
+                <div className="space-y-1.5 p-3.5 bg-emerald-50/50 rounded-2xl border border-emerald-200/80">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-bold uppercase tracking-wider text-emerald-950 flex items-center gap-1.5">
+                      <Search className="w-3.5 h-3.5 text-emerald-800" />
+                      <span>Search Real Place / Landmark</span>
+                    </label>
+                    <span className="text-[10px] text-stone-400 font-medium">OpenStreetMap Nominatim</span>
+                  </div>
+                  <div className="relative">
+                    <div className="flex items-center gap-2">
+                      <div className="relative flex-1">
+                        <input
+                          type="text"
+                          disabled={isSubmitting}
+                          value={placeQuery}
+                          onChange={(e) => {
+                            setPlaceQuery(e.target.value);
+                            setPlaceSearchError(null);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handlePlaceSearch();
+                            }
+                          }}
+                          placeholder="Search real place (e.g. Berhampore, Hyde Park, Central Botanical Garden)..."
+                          className="w-full pl-3.5 pr-8 py-2 text-xs text-stone-900 bg-white border border-stone-200 rounded-xl focus:outline-none focus:border-emerald-600 shadow-2xs transition-all disabled:opacity-60"
+                        />
+                        {placeQuery && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPlaceQuery('');
+                              setPlaceResults([]);
+                              setHasSearchedPlaces(false);
+                              setPlaceSearchError(null);
+                            }}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-700 cursor-pointer"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handlePlaceSearch}
+                        disabled={isSearchingPlaces || isSubmitting || !placeQuery.trim()}
+                        className="px-3.5 py-2 bg-emerald-800 hover:bg-emerald-900 active:scale-95 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer disabled:opacity-50 shrink-0"
+                      >
+                        {isSearchingPlaces ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>Searching...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Search className="w-3.5 h-3.5" />
+                            <span>Search</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    {/* Place Search Error Message */}
+                    {placeSearchError && (
+                      <div className="mt-2 p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-start gap-2 animate-in fade-in duration-150">
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-700 shrink-0 mt-0.5" />
+                        <span>{placeSearchError}</span>
+                      </div>
+                    )}
+
+                    {/* Place Search Dropdown Results */}
+                    {placeResults.length > 0 && (
+                      <div className="mt-2 bg-white rounded-xl border border-stone-200 shadow-lg divide-y divide-stone-100 max-h-56 overflow-y-auto animate-in fade-in duration-150 z-20 relative">
+                        <div className="px-3 py-1.5 bg-stone-50 text-[11px] font-semibold text-stone-500">
+                          Select a location to move the pin and update coordinates:
+                        </div>
+                        {placeResults.map((place) => (
+                          <button
+                            key={place.placeId}
+                            type="button"
+                            onClick={() => handleSelectPlace(place)}
+                            className="w-full text-left px-3.5 py-2.5 hover:bg-emerald-50/60 transition-colors flex items-start gap-2.5 group cursor-pointer"
+                          >
+                            <MapPin className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5 group-hover:scale-110 transition-transform" />
+                            <div className="flex-1 min-w-0">
+                              <div className="text-xs font-semibold text-stone-900 group-hover:text-emerald-950 truncate">
+                                {place.shortName}
+                              </div>
+                              <div className="text-[11px] text-stone-500 truncate mt-0.5">
+                                {place.displayName}
+                              </div>
+                              <div className="text-[10px] font-mono text-stone-400 mt-0.5">
+                                {place.lat.toFixed(5)}°, {place.lng.toFixed(5)}°
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 {/* Interactive Map */}
                 <div className="space-y-2">
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-stone-600">
@@ -1181,14 +1392,45 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
                     </span>
                   </div>
 
-                  <div className="relative rounded-2xl overflow-hidden border border-stone-300 shadow-inner">
+                  <div
+                    className={
+                      isMapFullscreen
+                        ? 'fixed inset-0 z-[9999] w-screen h-screen m-0 p-0 rounded-none border-none bg-stone-900 overflow-hidden flex flex-col'
+                        : 'relative rounded-2xl overflow-hidden border border-stone-300 shadow-inner'
+                    }
+                  >
                     <div
                       ref={mapContainerRef}
-                      className="h-64 sm:h-72 w-full relative z-0"
-                      style={{ minHeight: '260px' }}
+                      className={isMapFullscreen ? 'w-full h-full flex-1 relative z-0' : 'h-64 sm:h-72 w-full relative z-0'}
+                      style={isMapFullscreen ? undefined : { minHeight: '260px' }}
                     />
 
-                    {/* In-canvas Map / Satellite View Toggle */}
+                    {/* Fullscreen Floating Header Badge with Coordinates & Done Button */}
+                    {isMapFullscreen && (
+                      <div className="absolute top-2.5 left-2.5 z-[1000] max-w-[calc(100%-240px)] sm:max-w-md bg-white/95 backdrop-blur-md px-3 py-2 rounded-xl border border-stone-300 shadow-md flex items-center justify-between gap-2.5 text-xs pointer-events-auto animate-in fade-in duration-150">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <MapPin className="w-4 h-4 text-emerald-700 shrink-0" />
+                          <div className="min-w-0">
+                            <div className="font-bold text-stone-900 truncate">
+                              {locationName || 'Tap map or drag pin to adjust'}
+                            </div>
+                            <div className="text-[10px] font-mono text-stone-500 truncate">
+                              {latInput}°, {lngInput}°
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setIsMapFullscreen(false)}
+                          className="px-2.5 py-1 bg-emerald-800 hover:bg-emerald-900 active:scale-95 text-white rounded-lg text-xs font-semibold cursor-pointer shrink-0 transition-all shadow-xs"
+                          title="Return to submission form"
+                        >
+                          Done
+                        </button>
+                      </div>
+                    )}
+
+                    {/* In-canvas Map / Satellite View Toggle & Fullscreen Expand/Collapse */}
                     <div className="absolute top-2.5 right-2.5 z-[1000] pointer-events-auto flex items-center bg-white/95 backdrop-blur-md p-1 rounded-xl border border-stone-300 shadow-md">
                       <button
                         type="button"
@@ -1225,6 +1467,30 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
                       >
                         <Globe className="w-3.5 h-3.5" />
                         <span>Satellite</span>
+                      </button>
+                      <div className="w-px h-4 bg-stone-300 mx-1" />
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setIsMapFullscreen((prev) => !prev);
+                        }}
+                        className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer select-none ${
+                          isMapFullscreen
+                            ? 'bg-emerald-800 text-white shadow-xs'
+                            : 'text-stone-700 hover:text-stone-950 hover:bg-stone-100/90'
+                        }`}
+                        title={isMapFullscreen ? 'Collapse map to form layout (Esc)' : 'Expand map to fullscreen'}
+                        aria-label={isMapFullscreen ? 'Collapse map to form layout' : 'Expand map to fullscreen'}
+                      >
+                        {isMapFullscreen ? (
+                          <Minimize2 className="w-3.5 h-3.5 text-current" />
+                        ) : (
+                          <Maximize2 className="w-3.5 h-3.5 text-current" />
+                        )}
+                        <span>{isMapFullscreen ? 'Collapse' : 'Expand'}</span>
                       </button>
                     </div>
                   </div>
