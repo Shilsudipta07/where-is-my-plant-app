@@ -890,11 +890,17 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                       mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
                     }
                   } else {
-                    setNurseryNotice(`No nearby plant nurseries found within ${radiusKmRef.current} km. Try increasing the search radius to 25 km or 50 km.`);
+                    setNurseryNotice(`No nearby plant nurseries or garden centres found within ${radiusKmRef.current} km. Try increasing the search radius to 25 km or 50 km.`);
                   }
                 })
-                .catch(() => {
-                  setNurseryNotice('Unable to reach nursery directory service at this moment. Please check back shortly.');
+                .catch((err: any) => {
+                  const msg =
+                    err?.code === 'RATE_LIMIT' || (typeof err?.message === 'string' && err.message.includes('rate limited'))
+                      ? 'OpenStreetMap Overpass API is temporarily busy or rate limited. Please wait a moment and try again.'
+                      : err?.code === 'INVALID_COORDINATES'
+                      ? 'Location coordinates were invalid. Please ensure GPS is active and retry.'
+                      : 'Unable to reach OpenStreetMap nursery directory service at this moment. Please check your network connection and retry.';
+                  setNurseryNotice(msg);
                 })
                 .finally(() => setIsLoadingNurseries(false));
             }
@@ -1029,11 +1035,17 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               setNurseries(results);
               renderNurseryMarkersRef.current?.(results);
               if (results.length === 0) {
-                setNurseryNotice(`No nearby plant nurseries found within ${newRadius} km. Try increasing the search radius to 25 km or 50 km.`);
+                setNurseryNotice(`No nearby plant nurseries or garden centres found within ${newRadius} km. Try increasing the search radius to 25 km or 50 km.`);
               }
             })
-            .catch(() => {
-              setNurseryNotice('Unable to reach nursery directory service at this moment. Please check back shortly.');
+            .catch((err: any) => {
+              const msg =
+                err?.code === 'RATE_LIMIT' || (typeof err?.message === 'string' && err.message.includes('rate limited'))
+                  ? 'OpenStreetMap Overpass API is temporarily busy or rate limited. Please wait a moment and try again.'
+                  : err?.code === 'INVALID_COORDINATES'
+                  ? 'Location coordinates were invalid. Please ensure GPS is active and retry.'
+                  : 'Unable to reach OpenStreetMap nursery directory service at this moment. Please check your network connection and retry.';
+              setNurseryNotice(msg);
             })
             .finally(() => setIsLoadingNurseries(false));
         }
@@ -1822,13 +1834,13 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
       const isSelected = activeItem?.type === 'nursery' && activeItem.nursery?.id === nursery.id;
       const markerHtml = `
         <div class="relative cursor-pointer flex flex-col items-center justify-center transition-transform hover:scale-115">
-          <div style="background: linear-gradient(135deg, #059669 0%, #047857 100%);" class="w-9 h-9 sm:w-10 sm:h-10 rounded-full border-2 border-amber-400 shadow-lg flex items-center justify-center text-white ${
-            isSelected ? 'ring-4 ring-amber-300 scale-110 shadow-2xl' : ''
+          <div style="background: linear-gradient(135deg, #d97706 0%, #b45309 100%);" class="w-9 h-9 sm:w-10 sm:h-10 rounded-full border-2 border-amber-200 shadow-lg flex items-center justify-center text-white ${
+            isSelected ? 'ring-4 ring-amber-400 scale-110 shadow-2xl' : ''
           }">
             <span style="font-size: 16px; line-height: 1;">🪴</span>
           </div>
-          <div style="border-top-color: #047857;" class="w-0 h-0 border-x-4 border-x-transparent border-t-[8px] -mt-0.5"></div>
-          <div class="mt-0.5 bg-amber-950/90 text-amber-200 text-[9px] font-bold px-1.5 py-0.2 rounded shadow-xs whitespace-nowrap pointer-events-none border border-amber-600/60">
+          <div style="border-top-color: #b45309;" class="w-0 h-0 border-x-4 border-x-transparent border-t-[8px] -mt-0.5"></div>
+          <div class="mt-0.5 bg-stone-900 text-amber-300 text-[9px] font-bold px-1.5 py-0.2 rounded shadow-xs whitespace-nowrap pointer-events-none border border-amber-500/60">
             Nursery
           </div>
         </div>
@@ -1856,7 +1868,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
       const popupHtml = `
         <div style="font-family: inherit; width: 280px;" class="p-3 text-stone-900">
           <div class="flex items-center justify-between gap-1 mb-2">
-            <span class="text-[10px] uppercase font-bold tracking-wider text-emerald-900 bg-emerald-100 px-2 py-0.5 rounded border border-emerald-200 flex items-center gap-1">
+            <span class="text-[10px] uppercase font-bold tracking-wider text-amber-950 bg-amber-100 px-2 py-0.5 rounded border border-amber-300 flex items-center gap-1">
               <span>🪴</span>
               ${
                 nursery.type === 'garden_centre'
@@ -1866,8 +1878,9 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                   : 'Plant Nursery'
               }
             </span>
-            <span class="text-[10px] text-stone-700 font-semibold">
-              Verified POI
+            <span class="text-[10px] text-stone-600 font-semibold flex items-center gap-1">
+              <span class="w-1.5 h-1.5 rounded-full bg-amber-600"></span>
+              OpenStreetMap POI
             </span>
           </div>
 
@@ -1910,6 +1923,10 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                   </div>`
                 : ''
             }
+            <div class="text-[9px] text-stone-500 pt-1 border-t border-stone-200 flex items-center justify-between">
+              <span>OpenStreetMap Overpass (ODbL)</span>
+              <span class="text-emerald-700 font-medium">Free Open Data</span>
+            </div>
           </div>
 
           <div class="space-y-1.5 pt-1">
@@ -2009,11 +2026,16 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
           map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
         }
       } else {
-        setNurseryNotice(`No nearby plant nurseries found within ${radiusKm} km. Try increasing the search radius to 25 km or 50 km.`);
+        setNurseryNotice(`No nearby plant nurseries or garden centres found within ${radiusKm} km. Try increasing the search radius to 25 km or 50 km.`);
       }
-    } catch (_err) {
-      // Graceful error notification without triggering an unhandled console.error
-      setNurseryNotice('Unable to reach nursery directory service at this moment. Please check back shortly.');
+    } catch (err: any) {
+      const msg =
+        err?.code === 'RATE_LIMIT' || (typeof err?.message === 'string' && err.message.includes('rate limited'))
+          ? 'OpenStreetMap Overpass API is temporarily busy or rate limited. Please wait a moment and try again.'
+          : err?.code === 'INVALID_COORDINATES'
+          ? 'Location coordinates were invalid. Please ensure GPS is active and retry.'
+          : 'Unable to reach OpenStreetMap nursery directory service at this moment. Please check your network connection and retry.';
+      setNurseryNotice(msg);
     } finally {
       setIsLoadingNurseries(false);
     }
@@ -2439,7 +2461,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               disabled={isLoadingNurseries}
               className={`flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shadow-2xs border ${
                 showNurseries
-                  ? 'bg-emerald-800 text-white border-emerald-900 shadow-emerald-200'
+                  ? 'bg-amber-800 text-white border-amber-900 shadow-amber-200'
                   : 'bg-white border-stone-300 text-stone-700 hover:bg-stone-50'
               }`}
               title="Show nearby plant nurseries and garden centres on the map"
@@ -2447,7 +2469,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               <span>🪴</span>
               <span>{isLoadingNurseries ? 'Searching Nurseries...' : 'Nearby Plant Nurseries'}</span>
               {showNurseries && nurseries.length > 0 && (
-                <span className="ml-1 px-1.5 py-0.5 bg-emerald-900/60 text-white rounded-full text-[10px]">
+                <span className="ml-1 px-1.5 py-0.5 bg-amber-950/70 text-white rounded-full text-[10px]">
                   {nurseries.length}
                 </span>
               )}
@@ -2913,7 +2935,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               disabled={isLoadingNurseries}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer whitespace-nowrap border shrink-0 ${
                 showNurseries
-                  ? 'bg-emerald-800 text-white border-emerald-900 shadow-xs'
+                  ? 'bg-amber-800 text-white border-amber-900 shadow-xs'
                   : 'bg-stone-100 hover:bg-stone-200 border-stone-200 text-stone-700'
               }`}
               title="Show nearby plant nurseries and garden centres"
@@ -2921,7 +2943,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               <span>🪴</span>
               <span>{isLoadingNurseries ? 'Searching...' : 'Nearby Nurseries'}</span>
               {showNurseries && nurseries.length > 0 && (
-                <span className="ml-0.5 px-1.5 py-0.2 bg-emerald-900/70 text-white rounded-full text-[10px]">
+                <span className="ml-0.5 px-1.5 py-0.2 bg-amber-950/70 text-white rounded-full text-[10px]">
                   {nurseries.length}
                 </span>
               )}
@@ -3087,18 +3109,18 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
 
         {/* Nursery Notice Banner */}
         {showNurseries && nurseryNotice && (
-          <div className="bg-emerald-50 border border-emerald-300 rounded-2xl p-3.5 flex items-center justify-between gap-3 text-xs text-emerald-950 animate-in fade-in shadow-2xs">
+          <div className="bg-amber-50/95 border border-amber-300 rounded-2xl p-3.5 flex items-center justify-between gap-3 text-xs text-amber-950 animate-in fade-in shadow-2xs">
             <div className="flex items-center gap-2.5">
               <span className="text-lg shrink-0">🪴</span>
               <div className="leading-snug">
-                <strong className="font-semibold text-emerald-900">Plant Nurseries Notice: </strong>
+                <strong className="font-semibold text-amber-900">Nearby Nurseries: </strong>
                 <span>{nurseryNotice}</span>
               </div>
             </div>
             <button
               type="button"
               onClick={() => setNurseryNotice(null)}
-              className="text-emerald-700 hover:text-emerald-950 font-bold text-xs cursor-pointer p-1 shrink-0"
+              className="text-amber-800 hover:text-amber-950 font-bold text-xs cursor-pointer p-1 shrink-0"
               aria-label="Dismiss nursery notice"
             >
               ✕
@@ -3448,8 +3470,8 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               {showNurseries && nurseries.length > 0 && (
                 <>
                   <span className="text-stone-300">|</span>
-                  <span className="text-emerald-800 font-semibold truncate">
-                    <strong>{nurseries.length}</strong> nurseries
+                  <span className="text-amber-800 font-semibold truncate">
+                    <strong>{nurseries.length}</strong> nurseries (OSM)
                   </span>
                 </>
               )}
@@ -4024,7 +4046,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               <div className="bg-white rounded-3xl border border-stone-200 p-6 shadow-xs flex flex-col justify-between h-full space-y-4">
                 <div>
                   <div className="flex items-center justify-between gap-1 mb-2">
-                    <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 uppercase tracking-wider flex items-center gap-1">
+                    <span className="text-[10px] font-bold text-amber-900 bg-amber-100 px-2 py-0.5 rounded border border-amber-300 uppercase tracking-wider flex items-center gap-1">
                       <span>🪴</span>
                       {activeItem.nursery.type === 'garden_centre'
                         ? 'Garden Centre & Nursery'
@@ -4032,8 +4054,9 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                         ? 'Plant & Flower Shop'
                         : 'Plant Nursery'}
                     </span>
-                    <span className="text-[10px] font-medium text-stone-500">
-                      Verified POI
+                    <span className="text-[10px] font-semibold text-stone-600 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-600"></span>
+                      OpenStreetMap POI
                     </span>
                   </div>
 
@@ -4097,8 +4120,8 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                     )}
                   </div>
 
-                  <div className="mt-3 p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-900 leading-snug">
-                    ℹ️ <strong>Verified POI:</strong> Real local plant nursery and botanical supply point.
+                  <div className="mt-3 p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-[11px] text-amber-950 leading-snug">
+                    ℹ️ <strong>OpenStreetMap Verified POI:</strong> Real plant nursery and botanical retail location from OpenStreetMap contributors (ODbL).
                   </div>
                 </div>
 

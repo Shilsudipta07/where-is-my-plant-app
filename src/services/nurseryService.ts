@@ -1,8 +1,13 @@
 /**
  * Plant Nursery POI Service
- * Fetches real, verified plant nurseries and garden centres across India using OpenStreetMap & Nominatim data.
- * Does not fabricate mock nursery locations.
- * Uses exact user GPS coordinates and filters results strictly within the specified radius.
+ * Fetches real, verified plant nurseries, garden centres, and plant shops near the user's GPS position
+ * using OpenStreetMap data via the Overpass API with multi-mirror failover and Nominatim backup.
+ * 
+ * Strict Zero-Fabrication Guarantee:
+ * - Does not use mock, fake, or hardcoded nurseries.
+ * - Does not use paid APIs or Google Maps Platform APIs.
+ * - Enforces strict Haversine distance filtering for selected 5, 10, 25, and 50 km radii.
+ * - Differentiates empty radius results from API rate limits or network connection errors.
  */
 
 export interface PlantNursery {
@@ -17,11 +22,21 @@ export interface PlantNursery {
   openingHours?: string;
   website?: string;
   type: 'garden_centre' | 'plant_nursery' | 'plant_shop';
-  distanceMeters?: number;
+  distanceMeters: number;
   googleMapsDirectionsUrl: string;
 }
 
-// Calculate Haversine distance in meters
+export class NurseryFetchError extends Error {
+  code: 'RATE_LIMIT' | 'TIMEOUT' | 'API_UNAVAILABLE' | 'INVALID_COORDINATES';
+
+  constructor(message: string, code: 'RATE_LIMIT' | 'TIMEOUT' | 'API_UNAVAILABLE' | 'INVALID_COORDINATES') {
+    super(message);
+    this.name = 'NurseryFetchError';
+    this.code = code;
+  }
+}
+
+// Calculate Haversine distance in meters between two GPS coordinates
 export function calculateDistanceMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371000;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -37,7 +52,7 @@ export function calculateDistanceMeters(lat1: number, lon1: number, lat2: number
 }
 
 /**
- * Generate a legitimate Google Maps directions URL from user coordinates to destination
+ * Generate a standard Google Maps driving directions link
  */
 export function buildGoogleMapsDirectionsUrl(
   originLat: number,
@@ -53,7 +68,7 @@ export function buildGoogleMapsDirectionsUrl(
 }
 
 /**
- * Calculate bounding box [minLon, maxLat, maxLon, minLat] for Nominatim viewbox query
+ * Calculate bounding box [minLon, maxLat, maxLon, minLat] for viewbox fallback queries
  */
 export function calculateBoundingBox(lat: number, lon: number, radiusMeters: number) {
   const R = 6371; // Earth radius in km
@@ -71,8 +86,134 @@ export function calculateBoundingBox(lat: number, lon: number, radiusMeters: num
 }
 
 /**
+ * Parse OpenStreetMap Overpass elements (nodes and ways) into typed PlantNursery POIs.
+ * Filters strictly within the chosen radius and excludes preschool / kindergarten false positives.
+ */
+export function parseOverpassElements(
+  elements: any[],
+  originLat: number,
+  originLng: number,
+  radiusMeters: number
+): PlantNursery[] {
+  const results: PlantNursery[] = [];
+  const seenCoords = new Set<string>();
+
+  for (const el of elements) {
+    const lat = el.lat ?? el.center?.lat;
+    const lng = el.lon ?? el.center?.lon;
+    if (lat == null || lng == null || isNaN(lat) || isNaN(lng)) continue;
+
+    const tags = el.tags || {};
+
+    // Reject schools, kindergartens, and childcare facilities sometimes termed 'nursery'
+    if (
+      tags.amenity === 'school' ||
+      tags.amenity === 'kindergarten' ||
+      tags.amenity === 'childcare' ||
+      tags.amenity === 'preschool'
+    ) {
+      continue;
+    }
+
+    const nameRaw = (tags.name || tags['name:en'] || '').trim();
+    const lowerName = nameRaw.toLowerCase();
+    if (
+      lowerName.includes('school') ||
+      lowerName.includes('preschool') ||
+      lowerName.includes('kindergarten') ||
+      lowerName.includes('creche') ||
+      lowerName.includes('play school') ||
+      lowerName.includes('daycare') ||
+      lowerName.includes('climbing')
+    ) {
+      continue;
+    }
+
+    // Strict Haversine distance verification
+    const distanceMeters = calculateDistanceMeters(originLat, originLng, lat, lng);
+    if (distanceMeters > radiusMeters) {
+      continue;
+    }
+
+    // Deduplicate identical points (~10m grid)
+    const coordKey = `${lat.toFixed(4)},${lng.toFixed(4)}`;
+    if (seenCoords.has(coordKey)) continue;
+    seenCoords.add(coordKey);
+
+    // Classification
+    let type: 'garden_centre' | 'plant_nursery' | 'plant_shop' = 'plant_nursery';
+    if (tags.shop === 'garden_centre' || tags.landuse === 'plant_nursery') {
+      type = 'garden_centre';
+    } else if (
+      tags.shop === 'florist' ||
+      tags.shop === 'flowers' ||
+      lowerName.includes('florist') ||
+      lowerName.includes('flower')
+    ) {
+      type = 'plant_shop';
+    }
+
+    // Address construction from OSM address tags
+    let address: string | undefined;
+    const addrParts: string[] = [];
+    if (tags['addr:housenumber']) addrParts.push(tags['addr:housenumber']);
+    if (tags['addr:street']) addrParts.push(tags['addr:street']);
+    if (tags['addr:suburb'] && !addrParts.includes(tags['addr:suburb'])) addrParts.push(tags['addr:suburb']);
+    if (tags['addr:neighbourhood'] && !addrParts.includes(tags['addr:neighbourhood'])) addrParts.push(tags['addr:neighbourhood']);
+    if (tags['addr:city'] && !addrParts.includes(tags['addr:city'])) addrParts.push(tags['addr:city']);
+    if (tags['addr:state'] && !addrParts.includes(tags['addr:state'])) addrParts.push(tags['addr:state']);
+    if (tags['addr:postcode']) addrParts.push(tags['addr:postcode']);
+
+    if (addrParts.length > 0) {
+      address = addrParts.join(', ');
+    } else if (tags['addr:full']) {
+      address = tags['addr:full'];
+    }
+
+    const phone =
+      tags.phone ||
+      tags['contact:phone'] ||
+      tags['contact:mobile'] ||
+      undefined;
+    const openingHours = tags.opening_hours || undefined;
+    const website = tags.website || tags['contact:website'] || undefined;
+
+    const defaultName =
+      type === 'garden_centre'
+        ? 'Garden Centre & Nursery'
+        : type === 'plant_shop'
+        ? 'Plant & Flower Shop'
+        : 'Plant Nursery';
+    const finalName = nameRaw || defaultName;
+
+    const googleMapsDirectionsUrl = buildGoogleMapsDirectionsUrl(
+      originLat,
+      originLng,
+      lat,
+      lng,
+      finalName
+    );
+
+    results.push({
+      id: `osm-${el.type || 'node'}-${el.id}`,
+      name: finalName,
+      coordinates: { lat, lng },
+      address,
+      phone,
+      openingHours,
+      website,
+      type,
+      distanceMeters,
+      googleMapsDirectionsUrl,
+    });
+  }
+
+  results.sort((a, b) => a.distanceMeters - b.distanceMeters);
+  return results;
+}
+
+/**
  * Parse Nominatim geocoding results into typed PlantNursery POIs
- * Strictly filters out preschools, kindergartens, daycares, non-plant shops, and items outside radiusMeters.
  */
 export function parseNominatimFeatures(
   items: any[],
@@ -88,7 +229,6 @@ export function parseNominatimFeatures(
     const itemLng = parseFloat(item.lon);
     if (isNaN(itemLat) || isNaN(itemLng)) continue;
 
-    // Reject schools, daycares, play schools, or kindergarten amenities often called "nursery school"
     if (item.class === 'amenity' || item.type === 'kindergarten' || item.type === 'school') {
       continue;
     }
@@ -96,41 +236,34 @@ export function parseNominatimFeatures(
     const nameRaw = (item.name || item.display_name?.split(',')?.[0] || '').trim();
     const lowerName = nameRaw.toLowerCase();
 
-    // Check for school/childcare false positives in name
     if (
       lowerName.includes('school') ||
       lowerName.includes('preschool') ||
       lowerName.includes('kindergarten') ||
       lowerName.includes('creche') ||
       lowerName.includes('play school') ||
-      lowerName.includes('child study') ||
-      lowerName.includes('climbing')
+      lowerName.includes('childcare') ||
+      lowerName.includes('daycare')
     ) {
       continue;
     }
 
-    // Deduplicate nearby nodes with same coordinates (within ~10m)
-    const coordKey = `${itemLat.toFixed(4)},${itemLng.toFixed(4)}`;
-    if (seenCoords.has(coordKey)) continue;
-    seenCoords.add(coordKey);
-
-    // Calculate exact distance in meters from user GPS coordinates
     const distanceMeters = calculateDistanceMeters(originLat, originLng, itemLat, itemLng);
-
-    // Requirement 3 & 7: Do not display shops outside the selected radius
     if (distanceMeters > radiusMeters) {
       continue;
     }
 
-    // Determine specific nursery / plant shop type
+    const coordKey = `${itemLat.toFixed(4)},${itemLng.toFixed(4)}`;
+    if (seenCoords.has(coordKey)) continue;
+    seenCoords.add(coordKey);
+
     let type: 'garden_centre' | 'plant_nursery' | 'plant_shop' = 'plant_nursery';
-    if (item.type === 'garden_centre' || item.class === 'shop' && item.type === 'garden_centre') {
+    if (item.type === 'garden_centre' || (item.class === 'shop' && item.type === 'garden_centre')) {
       type = 'garden_centre';
     } else if (item.type === 'florist' || lowerName.includes('florist') || lowerName.includes('flower')) {
       type = 'plant_shop';
     }
 
-    // Build human-readable address from address object or display_name
     let address: string | undefined;
     if (item.address && typeof item.address === 'object') {
       const parts: string[] = [];
@@ -148,7 +281,6 @@ export function parseNominatimFeatures(
       address = item.display_name;
     }
 
-    // Extract phone, opening hours, website from extratags if available
     const extratags = item.extratags || {};
     const phone =
       extratags.phone ||
@@ -188,94 +320,105 @@ export function parseNominatimFeatures(
     });
   }
 
-  results.sort((a, b) => (a.distanceMeters || 0) - (b.distanceMeters || 0));
+  results.sort((a, b) => a.distanceMeters - b.distanceMeters);
   return results;
 }
 
+// In-memory cache for fast radius switching and rate-limit mitigation (5 minutes TTL)
+interface CacheEntry {
+  timestamp: number;
+  data: PlantNursery[];
+}
+const nurseryCache = new Map<string, CacheEntry>();
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
+// Public Overpass API mirrors with browser CORS support
+const OVERPASS_ENDPOINTS = [
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://overpass-api.de/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+];
+
 /**
- * Parse Geoapify Places API features into typed, sorted PlantNursery POIs
+ * Direct client-side Overpass API query with multi-mirror failover
  */
-export function parseGeoapifyFeatures(
-  features: any[],
-  originLat: number,
-  originLng: number,
+async function fetchFromOverpassApi(
+  lat: number,
+  lng: number,
   radiusMeters: number
-): PlantNursery[] {
-  const results: PlantNursery[] = [];
-  const seenCoords = new Set<string>();
+): Promise<{ success: boolean; nurseries: PlantNursery[]; rateLimited: boolean }> {
+  const query = `[out:json][timeout:15];
+(
+  node["shop"="garden_centre"](around:${radiusMeters},${lat},${lng});
+  way["shop"="garden_centre"](around:${radiusMeters},${lat},${lng});
+  node["shop"="plant_nursery"](around:${radiusMeters},${lat},${lng});
+  way["shop"="plant_nursery"](around:${radiusMeters},${lat},${lng});
+  node["landuse"="plant_nursery"](around:${radiusMeters},${lat},${lng});
+  way["landuse"="plant_nursery"](around:${radiusMeters},${lat},${lng});
+  node["shop"="florist"](around:${radiusMeters},${lat},${lng});
+  way["shop"="florist"](around:${radiusMeters},${lat},${lng});
+);
+out center tags 80;`;
 
-  for (const feature of features) {
-    const props = feature.properties || {};
-    const geom = feature.geometry || {};
-    const itemLat = typeof props.lat === 'number' ? props.lat : geom.coordinates?.[1];
-    const itemLng = typeof props.lon === 'number' ? props.lon : geom.coordinates?.[0];
+  let rateLimited = false;
 
-    if (itemLat == null || itemLng == null || isNaN(itemLat) || isNaN(itemLng)) continue;
+  for (const endpoint of OVERPASS_ENDPOINTS) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 7500);
 
-    const distanceMeters =
-      typeof props.distance === 'number'
-        ? Math.round(props.distance)
-        : calculateDistanceMeters(originLat, originLng, itemLat, itemLng);
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'User-Agent': 'WhereIsMyPlant/1.0 (Botanical Discovery Platform)',
+        },
+        body: `data=${encodeURIComponent(query)}`,
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
 
-    // Filter strictly within radius
-    if (distanceMeters > radiusMeters) continue;
+      if (res.status === 429) {
+        rateLimited = true;
+        continue;
+      }
 
-    const coordKey = `${Number(itemLat).toFixed(4)},${Number(itemLng).toFixed(4)}`;
-    if (seenCoords.has(coordKey)) continue;
-    seenCoords.add(coordKey);
-
-    const categories: string[] = Array.isArray(props.categories) ? props.categories : [];
-    const isGardenCentre = categories.some((c: string) => c.includes('garden_centre'));
-    const type: 'garden_centre' | 'plant_shop' = isGardenCentre ? 'garden_centre' : 'plant_shop';
-
-    const defaultName = isGardenCentre ? 'Garden Centre & Nursery' : 'Plant & Flower Shop';
-    const name = props.name || props.address_line1 || defaultName;
-    const address = props.formatted || props.address_line2 || undefined;
-    const phone = props.contact?.phone || props.phone || undefined;
-    const openingHours = props.opening_hours || undefined;
-    const website = props.website || props.contact?.url || undefined;
-    const placeId = props.place_id || `geoapify-${itemLat}-${itemLng}`;
-
-    const googleMapsDirectionsUrl = buildGoogleMapsDirectionsUrl(
-      originLat,
-      originLng,
-      itemLat,
-      itemLng,
-      name
-    );
-
-    results.push({
-      id: `geo-${placeId}`,
-      name,
-      coordinates: { lat: itemLat, lng: itemLng },
-      address,
-      phone,
-      openingHours,
-      website,
-      type,
-      distanceMeters,
-      googleMapsDirectionsUrl,
-    });
+      if (res.ok) {
+        try {
+          const data = await res.json();
+          if (data && Array.isArray(data.elements)) {
+            const nurseries = parseOverpassElements(data.elements, lat, lng, radiusMeters);
+            return { success: true, nurseries, rateLimited: false };
+          }
+        } catch (_jsonErr) {
+          // If response body is not JSON, try next mirror
+        }
+      }
+    } catch (_err) {
+      // Continue to next mirror
+    }
   }
 
-  results.sort((a, b) => (a.distanceMeters || 0) - (b.distanceMeters || 0));
-  return results;
+  return { success: false, nurseries: [], rateLimited };
 }
 
 /**
- * Direct client-side Nominatim search for plant nurseries and garden centres within the bounding box
+ * Direct client-side Nominatim search fallback
  */
 async function fetchFromClientNominatim(
   lat: number,
   lng: number,
   radiusMeters: number
-): Promise<PlantNursery[]> {
+): Promise<{ success: boolean; nurseries: PlantNursery[]; rateLimited: boolean }> {
   const bbox = calculateBoundingBox(lat, lng, radiusMeters);
   const viewboxStr = `${bbox.minLon},${bbox.maxLat},${bbox.maxLon},${bbox.minLat}`;
 
   const queries = ['garden centre', 'plant nursery', 'plant shop'];
   const allResults: PlantNursery[] = [];
   const seenIds = new Set<string>();
+  let rateLimited = false;
+  let hadSuccessfulResponse = false;
 
   for (const q of queries) {
     try {
@@ -284,17 +427,23 @@ async function fetchFromClientNominatim(
 
       const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(
         q
-      )}&format=json&limit=50&viewbox=${viewboxStr}&bounded=1&addressdetails=1&extratags=1`;
+      )}&format=json&limit=40&viewbox=${viewboxStr}&bounded=1&addressdetails=1&extratags=1`;
 
       const res = await fetch(url, {
         headers: {
-          'User-Agent': 'WhereIsMyPlant/1.0 (Botanical Discovery App)',
+          'User-Agent': 'WhereIsMyPlant/1.0 (Botanical Discovery Platform)',
         },
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
 
+      if (res.status === 429) {
+        rateLimited = true;
+        continue;
+      }
+
       if (res.ok) {
+        hadSuccessfulResponse = true;
         const data = await res.json();
         if (Array.isArray(data)) {
           const parsed = parseNominatimFeatures(data, lat, lng, radiusMeters);
@@ -310,14 +459,35 @@ async function fetchFromClientNominatim(
       // Continue to next query
     }
   }
+              seenIds.add(item.id);
+              allResults.push(item);
+            }
+          }
+        }
+      }
+    } catch (_err) {
+      // Continue to next query
+    }
+  }
 
-  allResults.sort((a, b) => (a.distanceMeters || 0) - (b.distanceMeters || 0));
-  return allResults;
+  allResults.sort((a, b) => a.distanceMeters - b.distanceMeters);
+  return {
+    success: hadSuccessfulResponse,
+    nurseries: allResults,
+    rateLimited,
+  };
 }
 
 /**
- * Fetch real nearby plant nurseries & plant shops within the selected radius around the user's GPS position.
- * Tries server proxy /api/nurseries first, then client-side Nominatim POI search.
+ * Fetch real nearby plant nurseries & garden centres within the selected radius around the user's GPS position.
+ * 
+ * Pipeline:
+ * 1. Checks server-side proxy route (/api/nurseries) if available and returning valid JSON.
+ * 2. Directly queries OpenStreetMap Overpass API across multiple reliable mirrors.
+ * 3. Falls back to OpenStreetMap Nominatim bounded POI search.
+ * 4. Strictly validates all coordinates and enforces Haversine radius limits (5, 10, 25, 50 km).
+ * 5. Distinguishes rate limits and service interruptions from genuine zero-results.
+ * 
  * @param lat User GPS Latitude
  * @param lng User GPS Longitude
  * @param radiusMeters Search radius in meters (5 km, 10 km, 25 km, 50 km)
@@ -327,10 +497,14 @@ export async function fetchNearbyPlantNurseries(
   lng: number,
   radiusMeters: number = 10000
 ): Promise<PlantNursery[]> {
-  // Support radius options: 5 km, 10 km, 25 km, 50 km (clamped between 5000 and 50000 meters)
+  if (typeof lat !== 'number' || typeof lng !== 'number' || isNaN(lat) || isNaN(lng)) {
+    throw new NurseryFetchError('Invalid GPS coordinates provided for nursery search.', 'INVALID_COORDINATES');
+  }
+
+  // Support standard radius options: 5 km, 10 km, 25 km, 50 km (clamped between 5000 and 50000 meters)
   const clampedRadius = Math.max(5000, Math.min(radiusMeters, 50000));
 
-  // 1. Try server-side proxy route first (/api/nurseries)
+  // 1. Try server-side proxy route first if running full-stack (/api/nurseries)
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 6000);
@@ -345,7 +519,6 @@ export async function fetchNearbyPlantNurseries(
     if (res.ok && contentType.includes('application/json')) {
       const data = await res.json();
       if (data && Array.isArray(data.nurseries) && data.nurseries.length > 0) {
-        // Ensure every item has a valid googleMapsDirectionsUrl and distance strictly within clampedRadius
         return (data.nurseries as PlantNursery[])
           .filter((n) => (n.distanceMeters ?? 0) <= clampedRadius)
           .map((n) => ({
@@ -357,9 +530,32 @@ export async function fetchNearbyPlantNurseries(
       }
     }
   } catch (_proxyErr) {
-    // Falls through to client-side Nominatim query
+    // Continue directly to client-side Overpass
   }
 
-  // 2. Client-side Nominatim POI query fallback
-  return fetchFromClientNominatim(lat, lng, clampedRadius);
+  // 2. OpenStreetMap Overpass API (Primary Open-Data Source)
+  const overpassResult = await fetchFromOverpassApi(lat, lng, clampedRadius);
+  if (overpassResult.success) {
+    return overpassResult.nurseries;
+  }
+
+  // 3. OpenStreetMap Nominatim Fallback
+  const nominatimResult = await fetchFromClientNominatim(lat, lng, clampedRadius);
+  if (nominatimResult.success) {
+    return nominatimResult.nurseries;
+  }
+
+  // If rate limited on either open-data provider
+  if (overpassResult.rateLimited || nominatimResult.rateLimited) {
+    throw new NurseryFetchError(
+      'OpenStreetMap Overpass API is temporarily rate limited. Please wait a few moments and try again.',
+      'RATE_LIMIT'
+    );
+  }
+
+  // If both open-data services failed to respond
+  throw new NurseryFetchError(
+    'Unable to connect to OpenStreetMap nursery directory services. Please check your network connection and retry.',
+    'API_UNAVAILABLE'
+  );
 }

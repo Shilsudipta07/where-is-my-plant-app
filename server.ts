@@ -263,9 +263,10 @@ async function startServer() {
     const query = `[out:json][timeout:20];(nw["landuse"="plant_nursery"](around:${clampedRadius},${lat},${lng});nw["shop"="garden_centre"](around:${clampedRadius},${lat},${lng});nw["shop"="plant_nursery"](around:${clampedRadius},${lat},${lng});nw["shop"="nursery"](around:${clampedRadius},${lat},${lng}););out center 40;`;
 
     const endpoints = [
-      'https://overpass.maprva.org/api/interpreter',
-      'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+      'https://overpass.kumi.systems/api/interpreter',
+      'https://overpass.private.coffee/api/interpreter',
       'https://overpass-api.de/api/interpreter',
+      'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
     ];
 
     for (const endpoint of endpoints) {
