@@ -116,7 +116,150 @@ async function startServer() {
       }
     }
 
-    // 2. OpenStreetMap Overpass query using verified endpoints
+    // 2. OpenStreetMap Nominatim Bounding Box Query for real nurseries and garden centres across India
+    try {
+      const R = 6371; // Earth radius in km
+      const radiusKm = clampedRadius / 1000;
+      const deltaLat = (radiusKm / R) * (180 / Math.PI);
+      const cosLat = Math.cos((lat * Math.PI) / 180);
+      const deltaLon = (radiusKm / (R * (Math.abs(cosLat) > 0.0001 ? cosLat : 1))) * (180 / Math.PI);
+
+      const minLon = +(lng - deltaLon).toFixed(4);
+      const maxLat = +(lat + deltaLat).toFixed(4);
+      const maxLon = +(lng + deltaLon).toFixed(4);
+      const minLat = +(lat - deltaLat).toFixed(4);
+      const viewboxStr = `${minLon},${maxLat},${maxLon},${minLat}`;
+
+      const queries = ['garden centre', 'plant nursery', 'plant shop'];
+      const results: any[] = [];
+      const seenCoords = new Set<string>();
+
+      for (const q of queries) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+          const nomUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(
+            q
+          )}&format=json&limit=50&viewbox=${viewboxStr}&bounded=1&addressdetails=1&extratags=1`;
+
+          const response = await fetch(nomUrl, {
+            headers: {
+              'User-Agent': 'WhereIsMyPlant/1.0 (Botanical Discovery Platform; contact: info@botanica.app)',
+            },
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+
+          if (!response.ok) continue;
+
+          const items = await response.json();
+          if (!Array.isArray(items)) continue;
+
+          for (const item of items) {
+            const itemLat = parseFloat(item.lat);
+            const itemLng = parseFloat(item.lon);
+            if (isNaN(itemLat) || isNaN(itemLng)) continue;
+
+            // Reject educational schools, daycares, kindergartens
+            if (item.class === 'amenity' || item.type === 'kindergarten' || item.type === 'school') {
+              continue;
+            }
+
+            const nameRaw = (item.name || item.display_name?.split(',')?.[0] || '').trim();
+            const lowerName = nameRaw.toLowerCase();
+            if (
+              lowerName.includes('school') ||
+              lowerName.includes('preschool') ||
+              lowerName.includes('kindergarten') ||
+              lowerName.includes('creche') ||
+              lowerName.includes('play school') ||
+              lowerName.includes('child study') ||
+              lowerName.includes('climbing')
+            ) {
+              continue;
+            }
+
+            const coordKey = `${itemLat.toFixed(4)},${itemLng.toFixed(4)}`;
+            if (seenCoords.has(coordKey)) continue;
+            seenCoords.add(coordKey);
+
+            const distanceMeters = calculateDistanceMeters(lat, lng, itemLat, itemLng);
+            if (distanceMeters > clampedRadius) {
+              continue; // Requirement 3 & 7: Strictly filter by radius
+            }
+
+            let type = 'plant_nursery';
+            if (item.type === 'garden_centre' || (item.class === 'shop' && item.type === 'garden_centre')) {
+              type = 'garden_centre';
+            } else if (item.type === 'florist' || lowerName.includes('florist') || lowerName.includes('flower')) {
+              type = 'plant_shop';
+            }
+
+            let address: string | undefined;
+            if (item.address && typeof item.address === 'object') {
+              const parts: string[] = [];
+              const addr = item.address;
+              if (addr.road) parts.push(addr.road);
+              if (addr.neighbourhood && addr.neighbourhood !== addr.road) parts.push(addr.neighbourhood);
+              if (addr.suburb && !parts.includes(addr.suburb)) parts.push(addr.suburb);
+              if (addr.city_district && !parts.includes(addr.city_district)) parts.push(addr.city_district);
+              if (addr.city && !parts.includes(addr.city)) parts.push(addr.city);
+              if (addr.state && !parts.includes(addr.state)) parts.push(addr.state);
+              if (addr.postcode) parts.push(addr.postcode);
+              if (parts.length > 0) address = parts.join(', ');
+            }
+            if (!address && item.display_name) {
+              address = item.display_name;
+            }
+
+            const extratags = item.extratags || {};
+            const phone =
+              extratags.phone ||
+              extratags['contact:phone'] ||
+              extratags['contact:mobile'] ||
+              undefined;
+            const openingHours = extratags.opening_hours || undefined;
+            const website = extratags.website || extratags['contact:website'] || undefined;
+
+            const defaultName =
+              type === 'garden_centre'
+                ? 'Garden Centre & Nursery'
+                : type === 'plant_shop'
+                ? 'Plant & Flower Shop'
+                : 'Plant Nursery';
+            const finalName = nameRaw || defaultName;
+
+            const destinationQuery = `${itemLat},${itemLng}+(${encodeURIComponent(finalName)})`;
+            const googleMapsDirectionsUrl = `https://www.google.com/maps/dir/?api=1&origin=${lat},${lng}&destination=${destinationQuery}&travelmode=driving`;
+
+            results.push({
+              id: `osm-${item.osm_type || 'node'}-${item.osm_id || item.place_id}`,
+              name: finalName,
+              coordinates: { lat: itemLat, lng: itemLng },
+              address,
+              phone,
+              openingHours,
+              website,
+              type,
+              distanceMeters,
+              googleMapsDirectionsUrl,
+            });
+          }
+        } catch (_nomErr) {
+          // Continue to next query
+        }
+      }
+
+      if (results.length > 0) {
+        results.sort((a, b) => (a.distanceMeters || 0) - (b.distanceMeters || 0));
+        return res.json({ nurseries: results });
+      }
+    } catch (_err) {
+      // Fall through to Overpass
+    }
+
+    // 3. OpenStreetMap Overpass query fallback
     const query = `[out:json][timeout:20];(nw["landuse"="plant_nursery"](around:${clampedRadius},${lat},${lng});nw["shop"="garden_centre"](around:${clampedRadius},${lat},${lng});nw["shop"="plant_nursery"](around:${clampedRadius},${lat},${lng});nw["shop"="nursery"](around:${clampedRadius},${lat},${lng}););out center 40;`;
 
     const endpoints = [
@@ -134,7 +277,7 @@ async function startServer() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
-            'User-Agent': 'BotanicaApp/1.0 (Botanical Exploration and Conservation; contact: info@botanica.app)',
+            'User-Agent': 'WhereIsMyPlant/1.0 (Botanical Exploration and Conservation; contact: info@botanica.app)',
             'Referer': 'https://overpass-turbo.eu/',
           },
           body: `data=${encodeURIComponent(query)}`,
@@ -189,6 +332,11 @@ async function startServer() {
           const type = (tags.landuse === 'plant_nursery' || tags.shop === 'plant_nursery' || tags.shop === 'nursery') ? 'plant_nursery' : 'garden_centre';
           const distanceMeters = calculateDistanceMeters(lat, lng, itemLat, itemLng);
 
+          if (distanceMeters > clampedRadius) continue;
+
+          const destinationQuery = `${itemLat},${itemLng}+(${encodeURIComponent(name)})`;
+          const googleMapsDirectionsUrl = `https://www.google.com/maps/dir/?api=1&origin=${lat},${lng}&destination=${destinationQuery}&travelmode=driving`;
+
           results.push({
             id: `osm-${el.type}-${el.id}`,
             name,
@@ -199,6 +347,7 @@ async function startServer() {
             website,
             type,
             distanceMeters,
+            googleMapsDirectionsUrl,
           });
         }
 

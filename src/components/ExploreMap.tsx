@@ -39,7 +39,7 @@ import {
   Minimize2,
 } from 'lucide-react';
 
-export type RadiusKmOption = 1 | 5 | 10 | 25 | 50;
+export type RadiusKmOption = 5 | 10 | 25 | 50;
 
 interface ExploreMapProps {
   plants: Plant[];
@@ -1819,16 +1819,27 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
     nurseryGroup.clearLayers();
 
     nurseryList.forEach((nursery) => {
-      const customIcon = L.divIcon({
-        className: 'custom-nursery-marker',
-        html: `
-          <div style="position: relative; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; background: #047857; color: white; border-radius: 50%; box-shadow: 0 4px 10px rgba(0,0,0,0.35); border: 2.5px solid #ffffff; cursor: pointer; transform: translate(-50%, -50%);">
-            <span style="font-size: 17px; line-height: 1;">🪴</span>
+      const isSelected = activeItem?.type === 'nursery' && activeItem.nursery?.id === nursery.id;
+      const markerHtml = `
+        <div class="relative cursor-pointer flex flex-col items-center justify-center transition-transform hover:scale-115">
+          <div style="background: linear-gradient(135deg, #059669 0%, #047857 100%);" class="w-9 h-9 sm:w-10 sm:h-10 rounded-full border-2 border-amber-400 shadow-lg flex items-center justify-center text-white ${
+            isSelected ? 'ring-4 ring-amber-300 scale-110 shadow-2xl' : ''
+          }">
+            <span style="font-size: 16px; line-height: 1;">🪴</span>
           </div>
-        `,
-        iconSize: [0, 0],
-        iconAnchor: [0, 0],
-        popupAnchor: [0, -22],
+          <div style="border-top-color: #047857;" class="w-0 h-0 border-x-4 border-x-transparent border-t-[8px] -mt-0.5"></div>
+          <div class="mt-0.5 bg-amber-950/90 text-amber-200 text-[9px] font-bold px-1.5 py-0.2 rounded shadow-xs whitespace-nowrap pointer-events-none border border-amber-600/60">
+            Nursery
+          </div>
+        </div>
+      `;
+
+      const customIcon = L.divIcon({
+        className: 'custom-nursery-marker-pin',
+        html: markerHtml,
+        iconSize: [48, 54],
+        iconAnchor: [24, 46],
+        popupAnchor: [0, -42],
       });
 
       const marker = L.marker([nursery.coordinates.lat, nursery.coordinates.lng], {
@@ -1901,13 +1912,24 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
             }
           </div>
 
-          <button
-            type="button"
-            onclick="window.wimpStartNavNursery ? window.wimpStartNavNursery('${safeId}') : (window.wimpStartNav && window.wimpStartNav(${nursery.coordinates.lat}, ${nursery.coordinates.lng}, '${safeName.replace(/'/g, "\\'")}'))"
-            class="w-full py-1.5 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
-          >
-            <span>🧭 Start Now (Route)</span>
-          </button>
+          <div class="space-y-1.5 pt-1">
+            <a
+              href="${nursery.googleMapsDirectionsUrl}"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="w-full py-1.5 px-3 bg-emerald-800 hover:bg-emerald-900 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+            >
+              <span>🗺️ Google Maps Directions</span>
+              <span class="text-[11px]">↗</span>
+            </a>
+            <button
+              type="button"
+              onclick="window.wimpStartNavNursery ? window.wimpStartNavNursery('${safeId}') : (window.wimpStartNav && window.wimpStartNav(${nursery.coordinates.lat}, ${nursery.coordinates.lng}, '${safeName.replace(/'/g, "\\'")}'))"
+              class="w-full py-1.5 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+            >
+              <span>🧭 In-App Road Route</span>
+            </button>
+          </div>
         </div>
       `;
 
@@ -2935,12 +2957,12 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               </button>
             </div>
 
-            {/* Radius Options (Requirement 3) */}
+            {/* Radius Options (5 km, 10 km, 25 km, 50 km) */}
             <div className="flex items-center gap-1 overflow-x-auto text-xs bg-stone-50 p-1 rounded-xl border border-stone-200">
               <span className="text-stone-500 font-semibold px-1.5 flex items-center gap-1 text-[11px] whitespace-nowrap">
                 <Navigation className="w-3 h-3 text-emerald-700" /> Radius:
               </span>
-              {([1, 5, 10, 25, 50] as RadiusKmOption[]).map((r) => (
+              {([5, 10, 25, 50] as RadiusKmOption[]).map((r) => (
                 <button
                   key={r}
                   type="button"
@@ -2950,7 +2972,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                       ? 'bg-emerald-800 text-white shadow-2xs'
                       : 'text-stone-700 hover:bg-stone-200'
                   }`}
-                  title={`Search plant observations within ${r} km`}
+                  title={`Search nurseries and observations within ${r} km`}
                 >
                   {r} km
                 </button>
@@ -4105,6 +4127,16 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                 )}
 
                 <div className="pt-2 space-y-2">
+                  <a
+                    href={activeItem.nursery.googleMapsDirectionsUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-emerald-800 hover:bg-emerald-900 text-white rounded-xl text-xs font-bold shadow-md hover:shadow-lg transition-all cursor-pointer"
+                  >
+                    <span>🗺️ Google Maps Directions</span>
+                    <ExternalLink className="w-3.5 h-3.5 text-emerald-200" />
+                  </a>
+
                   <button
                     type="button"
                     onClick={() =>
@@ -4114,7 +4146,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                       )
                     }
                     disabled={isCalculatingRoute}
-                    className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-md hover:shadow-lg transition-all cursor-pointer"
+                    className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-xs hover:shadow-md transition-all cursor-pointer"
                   >
                     {isCalculatingRoute ? (
                       <>
@@ -4124,7 +4156,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                     ) : (
                       <>
                         <Navigation className="w-4 h-4 text-white" />
-                        <span>Start Now (Road Navigation)</span>
+                        <span>In-App Road Navigation</span>
                       </>
                     )}
                   </button>
@@ -4140,9 +4172,9 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                         );
                       }
                     }}
-                    className="w-full flex items-center justify-center gap-1.5 py-2 px-4 bg-emerald-100 hover:bg-emerald-200 text-emerald-900 rounded-xl text-xs font-semibold shadow-2xs transition-colors cursor-pointer"
+                    className="w-full flex items-center justify-center gap-1.5 py-2 px-4 bg-stone-100 hover:bg-stone-200 text-stone-800 rounded-xl text-xs font-semibold shadow-2xs transition-colors cursor-pointer"
                   >
-                    <Compass className="w-3.5 h-3.5 text-emerald-700" />
+                    <Compass className="w-3.5 h-3.5 text-stone-600" />
                     <span>Center On This Nursery</span>
                   </button>
                 </div>
