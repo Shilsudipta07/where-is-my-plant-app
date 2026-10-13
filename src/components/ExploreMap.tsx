@@ -12,6 +12,7 @@ import {
 } from '../services/inaturalistService';
 import { getStoredCommunityObservations, initCommunityObservationsSync } from '../services/observationStorage';
 import { PlantNursery, fetchNearbyPlantNurseries } from '../services/nurseryService';
+import { PlantOccurrenceRecord, fetchGbifIndiaOccurrences, IndiaSourceFilter } from '../services/gbifService';
 import { calculateDistanceKm, formatDistance } from '../utils/geoUtils';
 import {
   MapPin,
@@ -181,6 +182,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
   const demoMarkersLayerRef = useRef<L.LayerGroup | null>(null);
   const inatMarkersLayerRef = useRef<L.LayerGroup | null>(null);
   const communityMarkersLayerRef = useRef<L.LayerGroup | null>(null);
+  const indiaMarkersLayerRef = useRef<L.LayerGroup | null>(null);
   const selectedPlantMarkerLayerRef = useRef<L.LayerGroup | null>(null);
   const nurseryMarkersLayerRef = useRef<L.LayerGroup | null>(null);
   const userMarkerRef = useRef<L.Marker | null>(null);
@@ -300,12 +302,34 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
   const [loadingMessage, setLoadingMessage] = useState<string>('Searching for observations...');
   const [observationError, setObservationError] = useState<string | null>(null);
 
-  // Active data source: 'real' (iNaturalist) or 'demo' (Campus arboretum fallback/test mode)
-  const [activeDataSource, setActiveDataSource] = useState<'real' | 'demo'>('real');
+  // Active data source: 'india' (GBIF India botanical observations), 'real' (iNaturalist), or 'demo' (Campus arboretum fallback)
+  const [activeDataSource, setActiveDataSource] = useState<'india' | 'real' | 'demo'>('india');
+
+  // India Observations State (GBIF Botanical Occurrences)
+  const [indiaRecords, setIndiaRecords] = useState<PlantOccurrenceRecord[]>(() =>
+    initialGbifRecords && Array.isArray(initialGbifRecords) ? initialGbifRecords : []
+  );
+  const [selectedIndiaObsId, setSelectedIndiaObsId] = useState<string | null>(null);
+  const [indiaMeta, setIndiaMeta] = useState<{
+    totalCount: number;
+    georeferencedCount: number;
+    missingCoordsCount: number;
+    skippedCount: number;
+  }>({
+    totalCount: initialGbifRecords?.length || 0,
+    georeferencedCount: initialGbifRecords?.length || 0,
+    missingCoordsCount: 0,
+    skippedCount: 0,
+  });
+  const [selectedIndiaSpeciesFilter, setSelectedIndiaSpeciesFilter] = useState<string>('All India Flora');
+  const [selectedIndiaSourceFilter, setSelectedIndiaSourceFilter] = useState<IndiaSourceFilter>('all');
+  const [, setIndiaOffset] = useState<number>(0);
+  const [hasMoreIndia, setHasMoreIndia] = useState<boolean>(false);
+  const [isLoadingMoreIndia, setIsLoadingMoreIndia] = useState<boolean>(false);
 
   // Nearby Mode & Search Terms
   const [isNearbyMode, setIsNearbyMode] = useState<boolean>(false);
-  const [currentQueryName, setCurrentQueryName] = useState<string>(() => initialInatSearch || initialGbifSearch || '');
+  const [currentQueryName, setCurrentQueryName] = useState<string>(() => initialInatSearch || initialGbifSearch || 'India Flora');
   const [mapSearchTerm, setMapSearchTerm] = useState<string>(() => initialInatSearch || initialGbifSearch || '');
 
   // Radius options (Requirement 3: 1 km, 5 km, 10 km, 25 km, 50 km; starts with 10 km)
@@ -336,13 +360,14 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
     };
   }, []);
 
-  // Spotlight active item
+  // Spotlight active item (including GBIF India observations)
   const [activeItem, setActiveItem] = useState<{
-    type: 'plant' | 'inat' | 'community' | 'nursery';
+    type: 'plant' | 'inat' | 'community' | 'nursery' | 'gbif';
     plant?: Plant;
     inat?: INaturalistObservationRecord;
     community?: CommunityObservation;
     nursery?: PlantNursery;
+    gbif?: PlantOccurrenceRecord;
   } | null>(null);
 
   // Real-time Geolocation tracking state (Continuous watchPosition)
@@ -438,6 +463,137 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
     },
     []
   );
+
+  /**
+   * Load verified India botanical observations from GBIF
+   */
+  const loadIndiaObservations = useCallback(
+    async (
+      speciesQuery?: string,
+      keepBounds: boolean = false,
+      offset: number = 0,
+      sourceOverride?: IndiaSourceFilter
+    ) => {
+      const isAppend = offset > 0;
+      const activeSource = sourceOverride !== undefined ? sourceOverride : selectedIndiaSourceFilter;
+      const isSpecific = Boolean(speciesQuery && speciesQuery.trim() && speciesQuery !== 'All India Flora');
+      const queryClean = isSpecific ? speciesQuery!.trim() : undefined;
+
+      if (isAppend) {
+        setIsLoadingMoreIndia(true);
+      } else {
+        setIsLoadingObservations(true);
+        setObservationError(null);
+        setLoadingMessage(
+          queryClean
+            ? `Searching verified Indian occurrences for "${queryClean}" on GBIF...`
+            : activeSource === 'plantnet'
+            ? 'Retrieving Pl@ntNet verified plant records in India from GBIF...'
+            : activeSource === 'human_obs'
+            ? 'Retrieving citizen science observations across India from GBIF...'
+            : activeSource === 'specimens'
+            ? 'Retrieving preserved herbarium specimen records across India from GBIF...'
+            : 'Retrieving verified botanical occurrences across India from GBIF...'
+        );
+        setActiveDataSource('india');
+        setIsNearbyMode(false);
+        setCurrentQueryName(queryClean || 'All India Flora');
+        setSelectedIndiaSpeciesFilter(speciesQuery || 'All India Flora');
+        if (sourceOverride !== undefined) {
+          setSelectedIndiaSourceFilter(sourceOverride);
+        }
+      }
+
+      try {
+        const result = await fetchGbifIndiaOccurrences(queryClean, 60, offset, activeSource);
+
+        if (isAppend) {
+          setIndiaRecords((prev) => {
+            const existingIds = new Set(prev.map((r) => r.id));
+            const newRecords = result.records.filter((r) => !existingIds.has(r.id));
+            return [...prev, ...newRecords];
+          });
+          setIndiaMeta((prev) => ({
+            totalCount: result.totalCount,
+            georeferencedCount: prev.georeferencedCount + result.georeferencedCount,
+            missingCoordsCount: prev.missingCoordsCount + result.missingCoordsCount,
+            skippedCount: prev.skippedCount + result.skippedCount,
+          }));
+          setIndiaOffset(offset + result.records.length);
+          setHasMoreIndia(result.hasMore);
+        } else {
+          setIndiaRecords(result.records);
+          setIndiaMeta({
+            totalCount: result.totalCount,
+            georeferencedCount: result.georeferencedCount,
+            missingCoordsCount: result.missingCoordsCount,
+            skippedCount: result.skippedCount,
+          });
+          setIndiaOffset(result.records.length);
+          setHasMoreIndia(result.hasMore);
+
+          const map = mapInstanceRef.current;
+          const validCoordsList = result.records.filter(
+            (r): r is PlantOccurrenceRecord & { coordinates: { lat: number; lng: number } } =>
+              Boolean(r.hasValidCoordinates && r.coordinates && typeof r.coordinates.lat === 'number' && typeof r.coordinates.lng === 'number')
+          );
+
+          if (map && validCoordsList.length > 0 && !keepBounds) {
+            const bounds = L.latLngBounds(
+              validCoordsList.map((r) => [r.coordinates.lat, r.coordinates.lng] as [number, number])
+            );
+            map.fitBounds(bounds, { padding: [40, 40], maxZoom: 12 });
+            setActiveItem({ type: 'gbif', gbif: result.records[0] });
+            setSelectedIndiaObsId(result.records[0].id);
+          } else if (result.records.length > 0) {
+            setActiveItem({ type: 'gbif', gbif: result.records[0] });
+            setSelectedIndiaObsId(result.records[0].id);
+          } else {
+            setActiveItem(null);
+            setSelectedIndiaObsId(null);
+          }
+        }
+      } catch (err) {
+        console.warn('[ExploreMap] Error loading India observations from GBIF:', err);
+        setObservationError('Unable to load India observations from GBIF. Please check your network and try again.');
+      } finally {
+        setIsLoadingObservations(false);
+        setIsLoadingMoreIndia(false);
+      }
+    },
+    [selectedIndiaSourceFilter]
+  );
+
+  /**
+   * Load more India observations pagination action
+   */
+  const handleLoadMoreIndia = useCallback(() => {
+    const currentSpecies = selectedIndiaSpeciesFilter !== 'All India Flora' ? selectedIndiaSpeciesFilter : undefined;
+    loadIndiaObservations(currentSpecies, true, indiaRecords.length, selectedIndiaSourceFilter);
+  }, [loadIndiaObservations, selectedIndiaSpeciesFilter, indiaRecords.length, selectedIndiaSourceFilter]);
+
+  /**
+   * Handle user clicking an observation card in the India observations list:
+   * 1. Highlights marker on the map (if coordinates exist)
+   * 2. Pans / zooms the map to the observation's recorded coordinates
+   * 3. Opens the marker popup and updates detail inspector
+   */
+  const handleSelectIndiaCard = useCallback((record: PlantOccurrenceRecord) => {
+    setSelectedIndiaObsId(record.id);
+    setActiveItem({ type: 'gbif', gbif: record });
+
+    const map = mapInstanceRef.current;
+    if (map && record.hasValidCoordinates && record.coordinates) {
+      map.setView([record.coordinates.lat, record.coordinates.lng], Math.max(map.getZoom(), 13), {
+        animate: true,
+      });
+
+      const marker = markersMapRef.current.get(record.id);
+      if (marker) {
+        marker.openPopup();
+      }
+    }
+  }, []);
 
   /**
    * Search real observations by plant name / taxon
@@ -978,6 +1134,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
 
     demoMarkersLayerRef.current = L.layerGroup().addTo(map);
     inatMarkersLayerRef.current = L.layerGroup().addTo(map);
+    indiaMarkersLayerRef.current = L.layerGroup().addTo(map);
     communityMarkersLayerRef.current = L.layerGroup().addTo(map);
     selectedPlantMarkerLayerRef.current = L.layerGroup().addTo(map);
     nurseryMarkersLayerRef.current = L.layerGroup().addTo(map);
@@ -1002,6 +1159,10 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
       mapInstanceRef.current = null;
       demoMarkersLayerRef.current = null;
       inatMarkersLayerRef.current = null;
+      if (indiaMarkersLayerRef.current) {
+        indiaMarkersLayerRef.current.clearLayers();
+        indiaMarkersLayerRef.current = null;
+      }
       communityMarkersLayerRef.current = null;
       if (selectedPlantMarkerLayerRef.current) {
         selectedPlantMarkerLayerRef.current.clearLayers();
@@ -1106,47 +1267,225 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
       );
       map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
     } else if (initialGbifRecords && initialGbifRecords.length > 0) {
-      // Compatibility with GBIF records passed from SearchResultsView
-      const mapped = initialGbifRecords.map((r) => ({
-        id: `inat-${r.gbifKey || r.id}`,
-        observationId: r.gbifKey || 1,
-        scientificName: r.scientificName,
-        commonName: r.commonName,
-        locality: r.locality || 'Recorded observation',
-        eventDate: r.eventDate || (r.year ? `${r.year}` : undefined),
-        coordinates: r.coordinates,
-        imageUrl: r.imageUrl,
-        observationUrl: r.gbifUrl || `https://www.inaturalist.org`,
-        gbifUrl: r.gbifUrl || `https://www.inaturalist.org`,
-        isRealData: true as const,
-        source: 'iNaturalist' as const,
-        datasetName: 'Public Botanical Observations',
-      }));
-      setInatRecords(mapped);
-      setActiveDataSource('real');
-      if (mapped.length > 0) {
-        const bounds = L.latLngBounds(
-          mapped.map((r) => [r.coordinates.lat, r.coordinates.lng] as [number, number])
-        );
-        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
+      // Direct GBIF India botanical observations
+      setIndiaRecords(initialGbifRecords);
+      setActiveDataSource('india');
+      setIndiaMeta({
+        totalCount: initialGbifRecords.length,
+        georeferencedCount: initialGbifRecords.filter((r) => r.hasValidCoordinates && r.coordinates).length,
+        missingCoordsCount: initialGbifRecords.filter((r) => !r.hasValidCoordinates || !r.coordinates).length,
+        skippedCount: 0,
+      });
+      if (initialGbifRecords[0]) {
+        setActiveItem({ type: 'gbif', gbif: initialGbifRecords[0] });
+        setSelectedIndiaObsId(initialGbifRecords[0].id);
       }
-    } else if (initialInatSearch?.trim() || initialGbifSearch?.trim()) {
-      const explicitQuery = (initialInatSearch || initialGbifSearch)!.trim();
-      handleQuerySpecies(explicitQuery);
+      const georeferenced = initialGbifRecords.filter((r) => r.hasValidCoordinates && r.coordinates);
+      if (georeferenced.length > 0) {
+        const bounds = L.latLngBounds(
+          georeferenced.map((r) => [r.coordinates.lat, r.coordinates.lng] as [number, number])
+        );
+        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 12 });
+      }
+    } else if (initialGbifSearch?.trim()) {
+      loadIndiaObservations(initialGbifSearch.trim());
+    } else if (initialInatSearch?.trim()) {
+      handleQuerySpecies(initialInatSearch.trim());
     }
-  }, [initialInatRecords, initialInatTaxon, initialGbifRecords, initialInatSearch, initialGbifSearch, targetCoordinates, handleQuerySpecies]);
+  }, [initialInatRecords, initialInatTaxon, initialGbifRecords, initialInatSearch, initialGbifSearch, targetCoordinates, handleQuerySpecies, loadIndiaObservations]);
+
+  // On mount: If in India mode and no records loaded yet, fetch verified occurrences across India from GBIF
+  useEffect(() => {
+    if (activeDataSource === 'india' && indiaRecords.length === 0 && !isLoadingObservations && !targetCoordinates) {
+      loadIndiaObservations();
+    }
+  }, [activeDataSource, indiaRecords.length, isLoadingObservations, targetCoordinates, loadIndiaObservations]);
 
   // Render Map Markers (iNaturalist Observations vs Demo Fallback)
   useEffect(() => {
     const map = mapInstanceRef.current;
     const inatGroup = inatMarkersLayerRef.current;
     const demoGroup = demoMarkersLayerRef.current;
+    const indiaGroup = indiaMarkersLayerRef.current;
 
     if (!map || !inatGroup || !demoGroup) return;
 
     inatGroup.clearLayers();
     demoGroup.clearLayers();
+    if (indiaGroup) indiaGroup.clearLayers();
     markersMapRef.current.clear();
+
+    // Render GBIF India Observation Markers
+    if (activeDataSource === 'india' && indiaGroup) {
+      indiaRecords.forEach((record) => {
+        if (!record.hasValidCoordinates || !record.coordinates || typeof record.coordinates.lat !== 'number' || typeof record.coordinates.lng !== 'number') {
+          return;
+        }
+
+        const isSelected = selectedIndiaObsId === record.id || (activeItem?.type === 'gbif' && activeItem.gbif?.id === record.id);
+        const hasPhoto = Boolean(record.imageUrl && record.mediaAttribution?.permitsReuse);
+
+        const markerHtml = `
+          <div class="relative cursor-pointer flex flex-col items-center justify-center transition-transform hover:scale-115">
+            <div style="background-color: ${isSelected ? '#047857' : '#064e3b'};" class="w-8 h-8 sm:w-9 sm:h-9 rounded-full border-2 border-amber-300 shadow-md flex items-center justify-center text-white ${
+              isSelected ? 'ring-4 ring-emerald-300 scale-110 shadow-xl' : ''
+            }">
+              <span style="font-size: 13px; line-height: 1;">${hasPhoto ? '📸' : '🌿'}</span>
+            </div>
+            <div style="border-top-color: ${isSelected ? '#047857' : '#064e3b'};" class="w-0 h-0 border-x-4 border-x-transparent border-t-[7px] -mt-0.5"></div>
+            <div class="mt-0.5 bg-emerald-950/90 text-amber-200 text-[9px] font-bold px-1.5 py-0.2 rounded shadow-xs whitespace-nowrap pointer-events-none border border-emerald-700/50">
+              GBIF • IN
+            </div>
+          </div>
+        `;
+
+        const customIcon = L.divIcon({
+          className: 'india-obs-pin',
+          html: markerHtml,
+          iconSize: [40, 50],
+          iconAnchor: [20, 40],
+          popupAnchor: [0, -38],
+        });
+
+        const marker = L.marker([record.coordinates.lat, record.coordinates.lng], {
+          icon: customIcon,
+          title: `India Observation: ${record.commonName || record.scientificName}`,
+        });
+
+        const photoSection = record.imageUrl && record.mediaAttribution?.permitsReuse
+          ? `<div class="mb-2 relative rounded-lg overflow-hidden h-36 bg-stone-100 border border-stone-200">
+              <img src="${record.imageUrl}" alt="${record.scientificName}" class="w-full h-full object-cover" />
+              <div class="absolute bottom-0 inset-x-0 bg-black/70 backdrop-blur-xs text-white text-[9px] px-2 py-1 leading-tight flex items-center justify-between gap-1">
+                <span class="truncate">Photo: ${record.mediaAttribution.creator || 'Observer'}</span>
+                <span class="bg-emerald-600/90 px-1 py-0.2 rounded font-mono text-[8px] uppercase shrink-0">${record.mediaAttribution.licenseLabel}</span>
+              </div>
+            </div>`
+          : `<div class="mb-2 p-2 bg-stone-50 rounded-lg border border-stone-200 text-[10px] text-stone-500 flex items-center gap-1.5">
+              <span>🌿</span>
+              <span>No open-license photo for this occurrence (respecting copyright)</span>
+            </div>`;
+
+        const sensitivityNotice = record.hasSensitiveLocation
+          ? `<div class="text-[10px] text-amber-900 bg-amber-50 p-1.5 rounded-lg border border-amber-200 mb-2 leading-snug">
+              ⚠️ <strong>Coordinate Note:</strong> Generalized location (~±${Math.round((record.coordinateUncertaintyInMeters || 10000)/1000)} km) to protect sensitive flora.
+            </div>`
+          : '';
+
+        const popupHtml = `
+          <div style="font-family: inherit; width: 290px;" class="p-3 text-stone-900">
+            <div class="flex items-center justify-between gap-1 mb-2">
+              <span class="text-[10px] uppercase font-bold tracking-wider text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 flex items-center gap-1">
+                <span>🇮🇳</span>
+                GBIF India Observation
+              </span>
+              <span class="text-[10px] font-mono font-medium text-stone-600">
+                #${record.gbifKey}
+              </span>
+            </div>
+
+            ${photoSection}
+
+            <div class="mb-2">
+              <h4 class="font-serif-display text-base font-bold text-stone-900 leading-tight">
+                ${record.commonName || record.scientificName}
+              </h4>
+              <p class="text-xs text-stone-600 italic">
+                ${record.scientificName} · Family: ${record.family}
+              </p>
+            </div>
+
+            <div class="space-y-1.5 text-xs text-stone-700 bg-stone-50 p-2.5 rounded-xl border border-stone-200 mb-2">
+              <div class="flex items-start gap-1.5">
+                <span class="text-stone-800 font-semibold shrink-0">📍 Location:</span>
+                <span class="text-stone-700 line-clamp-2">${record.locality}</span>
+              </div>
+              ${record.eventDate ? `
+                <div class="flex items-center gap-1.5">
+                  <span class="text-stone-800 font-semibold shrink-0">📅 Date:</span>
+                  <span class="text-stone-700">${record.eventDate}</span>
+                </div>
+              ` : ''}
+              <div class="flex items-center gap-1.5">
+                <span class="text-stone-800 font-semibold shrink-0">👤 Observer:</span>
+                <span class="text-stone-700 truncate">${record.recordedBy || 'Field Naturalist'}</span>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <span class="text-stone-800 font-semibold shrink-0">🌐 Coordinates:</span>
+                <span class="font-mono text-[11px] text-stone-700">${record.coordinates.lat.toFixed(4)}°, ${record.coordinates.lng.toFixed(4)}°</span>
+              </div>
+              <div class="flex items-center gap-1.5 pt-0.5 border-t border-stone-200 text-[10px] text-stone-700">
+                <span>🏛️ Source: <strong>${record.sourcePlatform || 'GBIF Occurrence Network'}</strong></span>
+              </div>
+              <div class="flex items-center gap-1.5 text-[10px] text-stone-500">
+                <span>📜 License: ${record.datasetLicenseLabel || 'CC BY-NC 4.0'}</span>
+              </div>
+            </div>
+
+            ${sensitivityNotice}
+
+            <div class="space-y-1.5">
+              <button
+                type="button"
+                onclick="window.wimpStartNav && window.wimpStartNav(${record.coordinates.lat}, ${record.coordinates.lng}, '${(record.commonName || record.scientificName || 'Plant Observation').replace(/'/g, "\\'")}')"
+                class="w-full py-1.5 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+              >
+                <span>🧭 Start Road Navigation</span>
+              </button>
+
+              ${record.originalRecordUrl && record.originalRecordUrl !== record.gbifUrl ? `
+                <a
+                  href="${record.originalRecordUrl}"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="flex items-center justify-center gap-1.5 w-full py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors"
+                >
+                  <span>View Original Record (${(record.sourcePlatform || 'Provider').split(' ')[0]})</span>
+                  <span class="text-[11px]">↗</span>
+                </a>
+              ` : ''}
+
+              <a
+                href="${record.gbifUrl}"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="flex items-center justify-center gap-1.5 w-full py-1.5 bg-emerald-900 hover:bg-emerald-950 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors"
+              >
+                <span>Open Source Record on GBIF</span>
+                <span class="text-[11px]">↗</span>
+              </a>
+            </div>
+          </div>
+        `;
+
+        marker.bindPopup(popupHtml, {
+          closeButton: true,
+          autoPan: true,
+          className: 'botanical-map-popup',
+        });
+
+        marker.on('click', () => {
+          setSelectedIndiaObsId(record.id);
+          setActiveItem({ type: 'gbif', gbif: record });
+          const cardEl = document.getElementById(`india-card-${record.id}`);
+          if (cardEl) {
+            cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          }
+        });
+
+        marker.on('popupopen', () => {
+          setSelectedIndiaObsId(record.id);
+          setActiveItem({ type: 'gbif', gbif: record });
+          const cardEl = document.getElementById(`india-card-${record.id}`);
+          if (cardEl) {
+            cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          }
+        });
+
+        indiaGroup.addLayer(marker);
+        markersMapRef.current.set(record.id, marker);
+      });
+      return;
+    }
 
     if (activeDataSource === 'demo') {
       // Demo sandbox pins
@@ -1330,7 +1669,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
       inatGroup.addLayer(marker);
       markersMapRef.current.set(record.id, marker);
     });
-  }, [inatRecords, activeDataSource, activeItem, plants]);
+  }, [inatRecords, indiaRecords, selectedIndiaObsId, activeDataSource, activeItem, plants]);
 
   // Render Community Observation Markers
   useEffect(() => {
@@ -2161,31 +2500,79 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               <span>Follow Me: {isFollowing ? 'ON' : 'OFF'}</span>
             </button>
 
-            {/* Fallback to Demo Data (Requirement 13) */}
-            <button
-              type="button"
-              onClick={() => {
-                if (activeDataSource === 'real') {
-                  setActiveDataSource('demo');
-                  const map = mapInstanceRef.current;
-                  if (map) {
-                    map.setView([DEMO_CAMPUS_CENTER.lat, DEMO_CAMPUS_CENTER.lng], 16, { animate: true });
+            {/* Data Source Mode Switcher (India GBIF / Worldwide iNat / Campus Demo) */}
+            <div className="flex items-center p-1 bg-stone-100 rounded-2xl border border-stone-300 shadow-inner">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveDataSource('india');
+                  if (indiaRecords.length === 0) {
+                    loadIndiaObservations();
+                  } else if (mapInstanceRef.current) {
+                    const valid = indiaRecords.filter(r => r.hasValidCoordinates && r.coordinates);
+                    if (valid.length > 0) {
+                      const bounds = L.latLngBounds(valid.map(r => [r.coordinates!.lat, r.coordinates!.lng] as [number, number]));
+                      mapInstanceRef.current.fitBounds(bounds, { padding: [40, 40], maxZoom: 12 });
+                    } else {
+                      mapInstanceRef.current.setView([DEFAULT_INDIA_CENTER.lat, DEFAULT_INDIA_CENTER.lng], DEFAULT_INDIA_ZOOM, { animate: true });
+                    }
                   }
-                } else {
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                  activeDataSource === 'india'
+                    ? 'bg-emerald-800 text-white shadow-xs'
+                    : 'text-stone-700 hover:text-stone-900'
+                }`}
+                title="Switch to verified India botanical observations from GBIF"
+              >
+                <span>🇮🇳</span>
+                <span>India Flora (GBIF)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
                   setActiveDataSource('real');
                   if (inatRecords.length > 0 && mapInstanceRef.current) {
                     const bounds = L.latLngBounds(
                       inatRecords.map((r) => [r.coordinates.lat, r.coordinates.lng] as [number, number])
                     );
                     mapInstanceRef.current.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
+                  } else {
+                    handleQuerySpecies('Tulsi');
                   }
-                }
-              }}
-              className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-white border border-stone-300 hover:bg-stone-50 text-stone-700 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap shadow-2xs"
-            >
-              <Database className="w-3.5 h-3.5 text-stone-500" />
-              <span>{activeDataSource === 'real' ? 'Switch to Test/Demo Mode' : 'Switch to Real Observations'}</span>
-            </button>
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                  activeDataSource === 'real'
+                    ? 'bg-emerald-800 text-white shadow-xs'
+                    : 'text-stone-700 hover:text-stone-900'
+                }`}
+                title="Switch to global observations from iNaturalist"
+              >
+                <Globe className="w-3.5 h-3.5" />
+                <span>Worldwide (iNat)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveDataSource('demo');
+                  const map = mapInstanceRef.current;
+                  if (map) {
+                    map.setView([DEMO_CAMPUS_CENTER.lat, DEMO_CAMPUS_CENTER.lng], 16, { animate: true });
+                  }
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                  activeDataSource === 'demo'
+                    ? 'bg-amber-700 text-white shadow-xs'
+                    : 'text-stone-700 hover:text-stone-900'
+                }`}
+                title="Switch to campus demo plants"
+              >
+                <Database className="w-3.5 h-3.5" />
+                <span>Demo</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -2296,8 +2683,61 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
           </div>
         )}
 
-        {/* Real Data Banner & Mandatory Scientific Note (Requirements 6, 8) */}
-        {activeDataSource === 'real' ? (
+        {/* Data Source Informational Banners */}
+        {activeDataSource === 'india' ? (
+          <div className="bg-emerald-50/95 border border-emerald-300 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-950 shadow-2xs">
+            <div className="flex items-start gap-3">
+              <span className="text-xl shrink-0 mt-0.5">🇮🇳</span>
+              <div className="leading-relaxed">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-bold text-emerald-900 text-sm">
+                    Verified India Botanical Observations (GBIF)
+                  </span>
+                  <span className="bg-emerald-200/80 text-emerald-900 px-2 py-0.5 rounded-full font-mono text-[11px] font-semibold">
+                    {indiaRecords.length} records loaded {indiaMeta.georeferencedCount > 0 && `(${indiaMeta.georeferencedCount} on map)`}
+                  </span>
+                </div>
+                <p className="text-stone-700 text-xs mt-1">
+                  Authentic plant occurrences across India from the Global Biodiversity Information Facility (GBIF).
+                  {selectedIndiaSpeciesFilter && selectedIndiaSpeciesFilter !== 'All India Flora' && (
+                    <span> Current species filter: <strong>&quot;{selectedIndiaSpeciesFilter}&quot;</strong>.</span>
+                  )}
+                </p>
+                <div className="text-stone-600 text-[11px] mt-1 flex flex-wrap items-center gap-2">
+                  <span>🏛️ Academic Herbaria & Citizen Science</span>
+                  <span>•</span>
+                  <span>🔒 Respects open photo licenses</span>
+                  {indiaMeta.missingCoordsCount > 0 && (
+                    <>
+                      <span>•</span>
+                      <span className="text-amber-800 font-medium">📍 {indiaMeta.missingCoordsCount} records without GPS coordinates (prevented false coordinates)</span>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0 self-start sm:self-auto">
+              <button
+                type="button"
+                onClick={() => loadIndiaObservations(selectedIndiaSpeciesFilter !== 'All India Flora' ? selectedIndiaSpeciesFilter : undefined)}
+                className="px-3 py-1.5 bg-white border border-emerald-300 hover:bg-emerald-100 text-emerald-900 text-xs rounded-xl font-semibold cursor-pointer transition-colors inline-flex items-center gap-1.5 shadow-2xs"
+              >
+                <RefreshCw className="w-3.5 h-3.5 text-emerald-700" />
+                <span>Refresh India Data</span>
+              </button>
+              <a
+                href="https://www.gbif.org/country/IN/summary"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-3 py-1.5 bg-emerald-800 hover:bg-emerald-900 text-white text-xs rounded-xl font-semibold cursor-pointer transition-colors inline-flex items-center gap-1 shadow-2xs"
+              >
+                <span>GBIF India</span>
+                <ExternalLink className="w-3 h-3 text-emerald-200" />
+              </a>
+            </div>
+          </div>
+        ) : activeDataSource === 'real' ? (
           <div className="bg-emerald-50/90 border border-emerald-200 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-950">
             <div className="flex items-start gap-3">
               <Globe className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
@@ -2341,10 +2781,10 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               </div>
             </div>
             <button
-              onClick={() => setActiveDataSource('real')}
+              onClick={() => setActiveDataSource('india')}
               className="px-3 py-1.5 bg-white border border-amber-300 hover:bg-amber-100 text-amber-900 text-xs rounded-xl font-semibold cursor-pointer shrink-0"
             >
-              Switch to Real Observations
+              Switch to India Observations
             </button>
           </div>
         )}
@@ -2394,12 +2834,16 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
 
         {/* Search & Radius Filter Bar (Requirement 3: 1 km, 5 km, 10 km, 25 km, 50 km) */}
         <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3 bg-white p-3.5 rounded-2xl border border-stone-200 shadow-2xs">
-          {/* Live Plant / Species Search Form (Requirement 2) */}
+          {/* Live Plant / Species Search Form */}
           <form
             onSubmit={(e) => {
               e.preventDefault();
               if (mapSearchTerm.trim()) {
-                handleQuerySpecies(mapSearchTerm);
+                if (activeDataSource === 'india') {
+                  loadIndiaObservations(mapSearchTerm.trim());
+                } else {
+                  handleQuerySpecies(mapSearchTerm.trim());
+                }
               }
             }}
             className="relative flex-1 min-w-[240px] max-w-lg flex items-center gap-2"
@@ -2410,7 +2854,11 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                 type="text"
                 value={mapSearchTerm}
                 onChange={(e) => setMapSearchTerm(e.target.value)}
-                placeholder="Search plant (e.g. Tulsi, Mimosa pudica, Neem, Mango)..."
+                placeholder={
+                  activeDataSource === 'india'
+                    ? "Search Indian flora (e.g. Tulsi, Neem, Sandalwood, Banyan)..."
+                    : "Search plant (e.g. Tulsi, Mimosa pudica, Neem, Mango)..."
+                }
                 className="w-full pl-9 pr-8 py-2 text-xs text-stone-800 bg-stone-50 border border-stone-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white transition-colors"
               />
               {mapSearchTerm && (
@@ -2430,7 +2878,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-800 hover:bg-emerald-900 disabled:opacity-50 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors cursor-pointer whitespace-nowrap"
             >
               <Globe className="w-3.5 h-3.5" />
-              <span>Search Observations</span>
+              <span>{activeDataSource === 'india' ? 'Search India' : 'Search Observations'}</span>
             </button>
           </form>
 
@@ -2511,32 +2959,109 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
           </div>
         </div>
 
-        {/* Real Species Quick Links (Requirements 2, 15: Tulsi, Mimosa pudica, etc.) */}
-        <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs text-stone-600">
-          <span className="font-semibold text-emerald-900 whitespace-nowrap text-[11px] flex items-center gap-1">
-            <Sparkles className="w-3 h-3 text-emerald-700" />
-            Quick Species Test:
-          </span>
-          {[
-            { label: 'Tulsi', query: 'Tulsi' },
-            { label: 'Mimosa pudica', query: 'Mimosa pudica' },
-            { label: 'Neem', query: 'Neem' },
-            { label: 'Mango', query: 'Mango' },
-            { label: 'Hibiscus', query: 'Hibiscus rosa-sinensis' },
-          ].map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              onClick={() => {
-                setMapSearchTerm(item.query);
-                handleQuerySpecies(item.query);
-              }}
-              className="px-2.5 py-1 rounded-lg bg-white border border-stone-200 hover:border-emerald-600 hover:text-emerald-900 text-stone-700 text-[11px] font-medium transition-colors whitespace-nowrap cursor-pointer shadow-2xs"
-            >
-              {item.label}
-            </button>
-          ))}
+        {/* Species & Source Platform Quick Filters (India GBIF Flora vs Worldwide iNat) */}
+        {activeDataSource === 'india' ? (
+          <div className="space-y-2">
+            {/* Source Repository / Platform Selector */}
+            <div className="flex items-center gap-2 overflow-x-auto pb-0.5 text-xs text-stone-600">
+              <span className="font-semibold text-emerald-950 whitespace-nowrap text-[11px] flex items-center gap-1">
+                <Database className="w-3 h-3 text-emerald-700" />
+                Data Source:
+              </span>
+              {[
+                { id: 'all', label: 'All GBIF Sources' },
+                { id: 'plantnet', label: '🌿 Pl@ntNet Published' },
+                { id: 'human_obs', label: '📸 Citizen Science Observations' },
+                { id: 'specimens', label: '🏛️ Herbarium Specimens' },
+              ].map((src) => (
+                <button
+                  key={src.id}
+                  type="button"
+                  onClick={() => {
+                    const newSource = src.id as IndiaSourceFilter;
+                    setSelectedIndiaSourceFilter(newSource);
+                    loadIndiaObservations(
+                      selectedIndiaSpeciesFilter !== 'All India Flora' ? selectedIndiaSpeciesFilter : undefined,
+                      false,
+                      0,
+                      newSource
+                    );
+                  }}
+                  className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-colors whitespace-nowrap cursor-pointer shadow-2xs ${
+                    selectedIndiaSourceFilter === src.id
+                      ? 'bg-emerald-900 text-white border-emerald-950 ring-1 ring-emerald-400'
+                      : 'bg-white border-stone-200 hover:border-emerald-600 hover:text-emerald-900 text-stone-700'
+                  }`}
+                >
+                  {src.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Indian Flora Species Quick Filter */}
+            <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs text-stone-600">
+              <span className="font-semibold text-emerald-900 whitespace-nowrap text-[11px] flex items-center gap-1">
+                <Sparkles className="w-3 h-3 text-emerald-700" />
+                Indian Flora Quick Filter:
+              </span>
+            {[
+              { label: 'All India Flora', query: 'All India Flora' },
+              { label: 'Tulsi', query: 'Tulsi' },
+              { label: 'Neem Tree', query: 'Neem' },
+              { label: 'Banyan Tree', query: 'Banyan' },
+              { label: 'Peepal (Sacred Fig)', query: 'Peepal' },
+              { label: 'Indian Sandalwood', query: 'Santalum album' },
+              { label: 'Amla (Gooseberry)', query: 'Phyllanthus emblica' },
+              { label: 'Mango (Aam)', query: 'Mango' },
+              { label: 'Lotus (Kamal)', query: 'Nelumbo nucifera' },
+              { label: 'Ashoka Tree', query: 'Ashoka' },
+              { label: 'China Rose (Hibiscus)', query: 'Hibiscus rosa-sinensis' },
+            ].map((item) => (
+              <button
+                key={item.label}
+                type="button"
+                onClick={() => {
+                  setMapSearchTerm(item.query === 'All India Flora' ? '' : item.query);
+                  loadIndiaObservations(item.query);
+                }}
+                className={`px-2.5 py-1 rounded-lg border text-[11px] font-medium transition-colors whitespace-nowrap cursor-pointer shadow-2xs ${
+                  selectedIndiaSpeciesFilter === item.query
+                    ? 'bg-emerald-800 text-white border-emerald-900'
+                    : 'bg-white border-stone-200 hover:border-emerald-600 hover:text-emerald-900 text-stone-700'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
         </div>
+      ) : (
+          <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs text-stone-600">
+            <span className="font-semibold text-emerald-900 whitespace-nowrap text-[11px] flex items-center gap-1">
+              <Sparkles className="w-3 h-3 text-emerald-700" />
+              Quick Species Test:
+            </span>
+            {[
+              { label: 'Tulsi', query: 'Tulsi' },
+              { label: 'Mimosa pudica', query: 'Mimosa pudica' },
+              { label: 'Neem', query: 'Neem' },
+              { label: 'Mango', query: 'Mango' },
+              { label: 'Hibiscus', query: 'Hibiscus rosa-sinensis' },
+            ].map((item) => (
+              <button
+                key={item.label}
+                type="button"
+                onClick={() => {
+                  setMapSearchTerm(item.query);
+                  handleQuerySpecies(item.query);
+                }}
+                className="px-2.5 py-1 rounded-lg bg-white border border-stone-200 hover:border-emerald-600 hover:text-emerald-900 text-stone-700 text-[11px] font-medium transition-colors whitespace-nowrap cursor-pointer shadow-2xs"
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Nursery Notice Banner */}
         {showNurseries && nurseryNotice && (
@@ -2819,7 +3344,19 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                 type="button"
                 onClick={() => {
                   if (mapInstanceRef.current) {
-                    if (activeDataSource === 'real' && inatRecords.length > 0) {
+                    if (activeDataSource === 'india') {
+                      const valid = indiaRecords.filter(
+                        (r) => r.hasValidCoordinates && r.coordinates
+                      );
+                      if (valid.length > 0) {
+                        const bounds = L.latLngBounds(
+                          valid.map((r) => [r.coordinates!.lat, r.coordinates!.lng] as [number, number])
+                        );
+                        mapInstanceRef.current.fitBounds(bounds, { padding: [40, 40], maxZoom: 12 });
+                      } else {
+                        mapInstanceRef.current.setView([DEFAULT_INDIA_CENTER.lat, DEFAULT_INDIA_CENTER.lng], DEFAULT_INDIA_ZOOM, { animate: true });
+                      }
+                    } else if (activeDataSource === 'real' && inatRecords.length > 0) {
                       const bounds = L.latLngBounds(
                         inatRecords.map((r) => [r.coordinates.lat, r.coordinates.lng] as [number, number])
                       );
@@ -2871,12 +3408,12 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               )}
             </div>
 
-            {/* Clickable Data Attribution near map (Requirements 6, 8) - Compact UI */}
+            {/* Clickable Data Attribution near map */}
             <div className="absolute bottom-2 left-2 sm:bottom-2.5 sm:left-2.5 z-[400] bg-white/95 backdrop-blur-md px-2 py-1 sm:px-2.5 sm:py-1 rounded-lg border border-stone-200/90 text-[10px] sm:text-[11px] text-stone-700 shadow-xs flex items-center gap-1.5 sm:gap-2 max-w-[calc(100%-170px)] sm:max-w-none">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse shrink-0"></span>
               <span className="truncate">
-                <strong>{activeDataSource === 'real' ? inatRecords.length : plants.length}</strong>{' '}
-                {activeDataSource === 'real' ? 'observations' : 'demo items'}
+                <strong>{activeDataSource === 'india' ? indiaRecords.length : activeDataSource === 'real' ? inatRecords.length : plants.length}</strong>{' '}
+                {activeDataSource === 'india' ? 'India GBIF records' : activeDataSource === 'real' ? 'observations' : 'demo items'}
               </span>
               {communityObsList.length > 0 && (
                 <>
@@ -2895,19 +3432,32 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                 </>
               )}
               <span className="text-stone-300 hidden xs:inline">|</span>
-              <a
-                href="https://www.inaturalist.org/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-semibold text-emerald-900 hover:underline hidden xs:inline-flex items-center gap-0.5 truncate"
-                title="Public observations from iNaturalist"
-              >
-                <span>iNaturalist data</span>
-                <ExternalLink className="w-2.5 h-2.5 text-stone-400 shrink-0" />
-              </a>
+              {activeDataSource === 'india' ? (
+                <a
+                  href="https://www.gbif.org/country/IN/summary"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-semibold text-emerald-900 hover:underline hidden xs:inline-flex items-center gap-0.5 truncate"
+                  title="Verified botanical records from GBIF"
+                >
+                  <span>GBIF India data</span>
+                  <ExternalLink className="w-2.5 h-2.5 text-stone-400 shrink-0" />
+                </a>
+              ) : (
+                <a
+                  href="https://www.inaturalist.org/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-semibold text-emerald-900 hover:underline hidden xs:inline-flex items-center gap-0.5 truncate"
+                  title="Public observations from iNaturalist"
+                >
+                  <span>iNaturalist data</span>
+                  <ExternalLink className="w-2.5 h-2.5 text-stone-400 shrink-0" />
+                </a>
+              )}
             </div>
 
-            {/* In-canvas Map Legend (Requirement 10) - Compact UI */}
+            {/* In-canvas Map Legend - Compact UI */}
             <div className="absolute bottom-2 right-2 sm:bottom-2.5 sm:right-2.5 z-[400] bg-white/95 backdrop-blur-md px-2 py-1.5 sm:px-2.5 sm:py-1.5 rounded-xl border border-stone-200/90 text-[9px] sm:text-[10px] text-stone-700 shadow-xs flex flex-col gap-0.5 sm:gap-1 select-none pointer-events-auto max-w-[150px] sm:max-w-[170px]">
               <div className="text-[8px] sm:text-[9px] uppercase font-bold text-stone-400 tracking-wider">Map Legend</div>
               <div className="flex items-center gap-1.5 leading-tight">
@@ -2917,10 +3467,17 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                 </span>
                 <span className="font-semibold text-blue-900 truncate">🔵 My location</span>
               </div>
-              <div className="flex items-center gap-1.5 leading-tight">
-                <span className="w-2 h-2 rounded-full bg-emerald-700 inline-block shrink-0"></span>
-                <span className="text-stone-700 truncate">🌱 Plant (iNat)</span>
-              </div>
+              {activeDataSource === 'india' ? (
+                <div className="flex items-center gap-1.5 leading-tight">
+                  <span className="w-2 h-2 rounded-full bg-emerald-700 inline-block shrink-0"></span>
+                  <span className="text-stone-700 truncate">🇮🇳 Plant (GBIF)</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 leading-tight">
+                  <span className="w-2 h-2 rounded-full bg-emerald-700 inline-block shrink-0"></span>
+                  <span className="text-stone-700 truncate">🌱 Plant (iNat)</span>
+                </div>
+              )}
               <div className="flex items-center gap-1.5 leading-tight">
                 <span className="w-2 h-2 rounded-full bg-purple-700 inline-block shrink-0"></span>
                 <span className="text-stone-700 truncate">🌸 Community</span>
@@ -2940,9 +3497,226 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
             </div>
           </div>
 
-          {/* Right Stage: Active Observation Inspector Card (Requirements 5, 6, 8) */}
+          {/* Right Stage: Active Observation Inspector Card */}
           <div className="lg:col-span-4 flex flex-col">
-            {activeItem?.type === 'inat' && activeItem.inat ? (
+            {activeItem?.type === 'gbif' && activeItem.gbif ? (
+              <div className="bg-white rounded-3xl border border-stone-200 p-6 shadow-xs flex flex-col justify-between h-full space-y-4 animate-in fade-in">
+                <div>
+                  <div className="flex items-center justify-between gap-1 mb-2">
+                    <span className="text-[10px] font-bold text-emerald-900 bg-emerald-100 px-2.5 py-0.5 rounded-full border border-emerald-300 uppercase tracking-wider flex items-center gap-1.5">
+                      <span>🇮🇳</span>
+                      <span>GBIF India Occurrence</span>
+                    </span>
+                    <span className="text-xs font-mono text-stone-500">
+                      #{activeItem.gbif.gbifKey}
+                    </span>
+                  </div>
+
+                  {activeItem.gbif.imageUrl && activeItem.gbif.mediaAttribution?.permitsReuse ? (
+                    <div className="aspect-[16/10] rounded-2xl overflow-hidden mb-3 bg-stone-100 border border-stone-200 relative group">
+                      <img
+                        src={activeItem.gbif.imageUrl}
+                        alt={activeItem.gbif.scientificName}
+                        className="w-full h-full object-cover"
+                      />
+                      <div className="absolute bottom-0 inset-x-0 bg-black/75 backdrop-blur-xs text-white text-[9px] p-2 flex items-center justify-between gap-1">
+                        <span className="truncate">Photo: {activeItem.gbif.mediaAttribution.creator || 'Observer'}</span>
+                        <span className="bg-emerald-600 px-1.5 py-0.5 rounded text-[8px] font-mono uppercase font-semibold shrink-0">
+                          {activeItem.gbif.mediaAttribution.licenseLabel}
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="aspect-[16/8] rounded-2xl mb-3 bg-stone-50 border border-stone-200 p-3 flex flex-col items-center justify-center text-center text-stone-500 space-y-1">
+                      <span className="text-2xl">🌿</span>
+                      <span className="text-xs font-medium text-stone-700">Verified Botanical Specimen</span>
+                      <span className="text-[10px] text-stone-400">
+                        {activeItem.gbif.mediaAttribution ? 'External photo copyright protected (respecting licenses)' : 'No open-license photo for this record'}
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="text-xs text-stone-400 font-medium">Plant / Specimen:</div>
+                  <h3 className="font-serif-display text-xl font-bold text-stone-900 leading-tight">
+                    {activeItem.gbif.commonName || activeItem.gbif.scientificName}
+                  </h3>
+                  {activeItem.gbif.commonName && (
+                    <div className="text-xs text-stone-600 italic mb-1 font-serif">
+                      Accepted: {activeItem.gbif.scientificName}
+                    </div>
+                  )}
+                  <div className="text-[11px] text-emerald-800 font-medium mb-2">
+                    Family: {activeItem.gbif.family} {activeItem.gbif.basisOfRecord && `• ${activeItem.gbif.basisOfRecord}`}
+                  </div>
+
+                  <div className="space-y-2 text-xs text-stone-600 bg-stone-50 p-3.5 rounded-2xl border border-stone-100 mt-2">
+                    <div>
+                      <span className="font-semibold text-stone-800 block">📍 Location:</span>
+                      <span className="text-stone-700">{activeItem.gbif.locality}</span>
+                    </div>
+
+                    {activeItem.gbif.eventDate && (
+                      <div>
+                        <span className="font-semibold text-stone-800">📅 Date Observed:</span>{' '}
+                        <span>{activeItem.gbif.eventDate}</span>
+                      </div>
+                    )}
+
+                    <div>
+                      <span className="font-semibold text-stone-800">👤 Observer / Collector:</span>{' '}
+                      <span className="text-stone-800 font-medium">{activeItem.gbif.recordedBy || 'Naturalist Observer'}</span>
+                    </div>
+
+                    <div>
+                      <span className="font-semibold text-stone-800 block">🌐 Geographic Coordinates:</span>
+                      {activeItem.gbif.hasValidCoordinates && activeItem.gbif.coordinates ? (
+                        <div className="mt-0.5 space-y-1">
+                          <span className="font-mono bg-stone-200/60 px-1.5 py-0.5 rounded text-[11px] text-stone-800">
+                            {activeItem.gbif.coordinates.lat.toFixed(5)}°, {activeItem.gbif.coordinates.lng.toFixed(5)}°
+                          </span>
+                          {activeItem.gbif.coordinatePrecisionNotice && (
+                            <p className="text-[10px] text-stone-500">
+                              {activeItem.gbif.coordinatePrecisionNotice}
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="mt-1 p-2 bg-amber-50 rounded-xl border border-amber-200 text-amber-900 text-[11px] leading-snug">
+                          📍 <strong>Coordinates not available:</strong> This specimen has withheld or unreferenced coordinates. To prevent incorrect coordinates, no marker is placed at guessed locations.
+                        </div>
+                      )}
+                    </div>
+
+                    {activeUserLocation && activeItem.gbif.hasValidCoordinates && activeItem.gbif.coordinates && (
+                      <div className="text-emerald-900 font-semibold pt-1 border-t border-stone-200 flex items-center justify-between">
+                        <span>Distance from your GPS:</span>
+                        <span className="font-mono">{formatDistance(activeUserLocation, activeItem.gbif.coordinates)}</span>
+                      </div>
+                    )}
+
+                    <div className="pt-2 border-t border-stone-200 text-[10px] text-stone-500 space-y-1">
+                      <div>
+                        <span className="font-semibold text-stone-700">🏛️ Source Platform:</span>{' '}
+                        <span className="text-emerald-900 font-semibold">{activeItem.gbif.sourcePlatform || 'GBIF Occurrence Network'}</span>
+                      </div>
+                      <div>
+                        <span className="font-semibold text-stone-700">📦 Dataset:</span>{' '}
+                        <span className="text-stone-700 truncate block" title={activeItem.gbif.datasetName}>{activeItem.gbif.datasetName}</span>
+                      </div>
+                      <div>
+                        <span className="font-semibold text-stone-700">📜 License:</span>{' '}
+                        <span className="text-emerald-800 font-medium">{activeItem.gbif.datasetLicenseLabel || 'Open Academic Access'}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {activeItem.gbif.hasSensitiveLocation && (
+                    <div className="mt-2.5 p-2 rounded-xl bg-amber-50 border border-amber-200 text-[11px] text-amber-900 leading-snug">
+                      🛡️ <strong>Sensitive Species Protection:</strong> Coordinate generalization applied at data source to safeguard rare wild populations against poaching.
+                    </div>
+                  )}
+                </div>
+
+                {/* Active Route Summary Box for GBIF India observation */}
+                {activeRoute && activeItem.gbif && activeItem.gbif.hasValidCoordinates && activeItem.gbif.coordinates && (
+                  <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-2xl text-xs space-y-1 text-blue-900">
+                    <div className="font-bold flex items-center justify-between">
+                      <span className="flex items-center gap-1.5 text-blue-800">
+                        <Navigation className="w-3.5 h-3.5 text-blue-600" /> Active Road Route
+                      </span>
+                      <span className="text-[10px] bg-blue-200/70 text-blue-900 font-bold px-1.5 py-0.5 rounded">
+                        OSRM Road
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3 pt-1">
+                      <div>
+                        <span className="text-stone-500 block text-[10px]">Distance:</span>
+                        <span className="font-bold text-sm text-blue-900">{formatRouteDistance(activeRoute.distanceMeters)}</span>
+                      </div>
+                      <div className="border-l border-blue-200 pl-3">
+                        <span className="text-stone-500 block text-[10px]">Est. Travel Time:</span>
+                        <span className="font-bold text-sm text-blue-900">{formatRouteDuration(activeRoute.durationSeconds)}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="pt-2 space-y-2">
+                  {activeItem.gbif.hasValidCoordinates && activeItem.gbif.coordinates ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleStartNavigation(
+                            activeItem.gbif!.coordinates!,
+                            activeItem.gbif!.commonName || activeItem.gbif!.scientificName
+                          )
+                        }
+                        disabled={isCalculatingRoute}
+                        className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-md hover:shadow-lg transition-all cursor-pointer"
+                      >
+                        {isCalculatingRoute ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin text-white" />
+                            <span>Calculating Road Route...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Navigation className="w-4 h-4 text-white" />
+                            <span>Start Now (Road Navigation)</span>
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (mapInstanceRef.current && activeItem.gbif?.coordinates) {
+                            mapInstanceRef.current.setView(
+                              [activeItem.gbif.coordinates.lat, activeItem.gbif.coordinates.lng],
+                              14,
+                              { animate: true }
+                            );
+                            const marker = markersMapRef.current.get(activeItem.gbif.id);
+                            if (marker) marker.openPopup();
+                          }
+                        }}
+                        className="w-full flex items-center justify-center gap-1.5 py-2 px-4 bg-emerald-100 hover:bg-emerald-200 text-emerald-900 rounded-xl text-xs font-semibold shadow-2xs transition-colors cursor-pointer"
+                      >
+                        <Compass className="w-3.5 h-3.5 text-emerald-700" />
+                        <span>Center On This Observation</span>
+                      </button>
+                    </>
+                  ) : null}
+
+                  {activeItem.gbif.originalRecordUrl && activeItem.gbif.originalRecordUrl !== activeItem.gbif.gbifUrl && (
+                    <a
+                      href={activeItem.gbif.originalRecordUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full flex items-center justify-center gap-1.5 py-2 px-4 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors"
+                    >
+                      <span>View on {(activeItem.gbif.sourcePlatform || 'Provider').split(' ')[0]}</span>
+                      <ExternalLink className="w-3.5 h-3.5 text-emerald-200" />
+                    </a>
+                  )}
+
+                  <a
+                    href={activeItem.gbif.gbifUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full flex items-center justify-center gap-1.5 py-2.5 px-4 bg-emerald-900 hover:bg-emerald-950 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors"
+                  >
+                    <span>Open Occurrence on GBIF</span>
+                    <ExternalLink className="w-3.5 h-3.5 text-emerald-200" />
+                  </a>
+
+                  <div className="text-[10px] text-center text-stone-500">
+                    Global Biodiversity Information Facility · Open Botanical Data
+                  </div>
+                </div>
+              </div>
+            ) : activeItem?.type === 'inat' && activeItem.inat ? (
               <div className="bg-white rounded-3xl border border-stone-200 p-6 shadow-xs flex flex-col justify-between h-full space-y-4">
                 <div>
                   <div className="flex items-center justify-between gap-1 mb-2">
@@ -3461,14 +4235,300 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
             ) : (
               <div className="bg-white rounded-3xl border border-stone-200 p-8 shadow-xs flex flex-col items-center justify-center text-center h-full text-stone-400 space-y-2">
                 <MapPin className="w-8 h-8 text-stone-300" />
-                <p className="text-sm font-medium">Click any observation marker on the map to inspect real iNaturalist sighting details.</p>
+                <p className="text-sm font-medium">
+                  {activeDataSource === 'india'
+                    ? 'Click any India observation marker on the map or select an observation card below to inspect verified GBIF botanical sighting details.'
+                    : 'Click any observation marker on the map to inspect real sighting details.'}
+                </p>
                 <div className="text-xs text-stone-400 max-w-xs mt-1">
-                  Or search for any botanical species in the search box above, or click "Find Plants Near Me".
+                  {activeDataSource === 'india'
+                    ? 'Explore verified botanical occurrences across India or filter by species above.'
+                    : 'Or search for any botanical species in the search box above, or click "Find Plants Near Me".'}
                 </div>
               </div>
             )}
           </div>
         </div>
+
+        {/* India Observations Cards Gallery (Requirements 1, 2, 8) */}
+        {activeDataSource === 'india' && (
+          <div className="space-y-4 pt-4 border-t border-stone-200">
+            {/* Scope Notice Banner (Requirement 8) */}
+            <div className="bg-emerald-50/80 border border-emerald-200 rounded-2xl p-3 text-xs text-emerald-950 flex items-start gap-2.5">
+              <Info className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+              <div className="space-y-0.5 leading-relaxed">
+                <p className="font-semibold text-emerald-900">
+                  Biodiversity Repository Scope Notice
+                </p>
+                <p className="text-stone-700 text-[11.5px]">
+                  These results represent public botanical records currently available from GBIF and participating data publishers (including Pl@ntNet and citizen science networks). They do not represent an exhaustive census of all flora in India.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xl">🇮🇳</span>
+                  <h3 className="font-serif-display text-xl sm:text-2xl font-bold text-stone-900">
+                    India Botanical Observations
+                  </h3>
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                    {indiaRecords.length} records
+                  </span>
+                </div>
+                <p className="text-xs text-stone-600 mt-1">
+                  Public botanical occurrence records across India from GBIF. Click any card to highlight its marker on the map and view full details.
+                </p>
+              </div>
+
+              {/* Counts Breakdown Pill */}
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="inline-flex items-center gap-1 bg-white px-3 py-1 rounded-xl border border-stone-200 text-stone-700 shadow-2xs">
+                  <span className="w-2 h-2 rounded-full bg-emerald-600" />
+                  <span><strong>{indiaMeta.georeferencedCount}</strong> on map</span>
+                </span>
+                {indiaMeta.missingCoordsCount > 0 && (
+                  <span className="inline-flex items-center gap-1 bg-amber-50 px-3 py-1 rounded-xl border border-amber-200 text-amber-800 shadow-2xs" title="Coordinates missing or withheld to protect sensitive taxa">
+                    <span className="w-2 h-2 rounded-full bg-amber-500" />
+                    <span><strong>{indiaMeta.missingCoordsCount}</strong> no GPS coordinates</span>
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Empty state */}
+            {!isLoadingObservations && indiaRecords.length === 0 && (
+              <div className="p-8 text-center bg-white rounded-3xl border border-stone-200 shadow-xs space-y-3">
+                <div className="w-12 h-12 rounded-2xl bg-amber-50 border border-amber-200 text-amber-700 flex items-center justify-center mx-auto text-xl">
+                  🌱
+                </div>
+                <h4 className="font-serif-display text-base font-bold text-stone-900">
+                  No India botanical observations found
+                </h4>
+                <p className="text-xs text-stone-600 max-w-md mx-auto">
+                  Try selecting a different Indian flora test button above (e.g. Tulsi, Neem, Banyan, Sandalwood) or searching for a botanical genus.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => loadIndiaObservations()}
+                  className="px-4 py-2 bg-emerald-800 hover:bg-emerald-900 text-white rounded-xl text-xs font-semibold cursor-pointer shadow-xs transition-colors"
+                >
+                  Load All India Flora
+                </button>
+              </div>
+            )}
+
+            {/* Cards Grid */}
+            {indiaRecords.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {indiaRecords.map((record) => {
+                  const isSelected = selectedIndiaObsId === record.id || (activeItem?.type === 'gbif' && activeItem.gbif?.id === record.id);
+                  const hasPhoto = Boolean(record.imageUrl && record.mediaAttribution?.permitsReuse);
+
+                  return (
+                    <div
+                      key={record.id}
+                      id={`india-card-${record.id}`}
+                      onClick={() => handleSelectIndiaCard(record)}
+                      className={`group rounded-2xl border p-4 transition-all duration-150 cursor-pointer flex flex-col justify-between ${
+                        isSelected
+                          ? 'border-emerald-600 bg-emerald-50/60 ring-2 ring-emerald-500 shadow-md -translate-y-0.5'
+                          : 'border-stone-200 bg-white hover:border-emerald-300 hover:shadow-xs'
+                      }`}
+                    >
+                      <div className="space-y-3">
+                        {/* Top meta badge & license */}
+                        <div className="flex items-center justify-between gap-1 text-[10px]">
+                          <span className={`px-2 py-0.5 rounded-full font-semibold uppercase tracking-wider ${
+                            isSelected ? 'bg-emerald-800 text-white' : 'bg-stone-100 text-stone-700'
+                          }`}>
+                            🇮🇳 #{record.gbifKey}
+                          </span>
+                          <span className="font-mono text-stone-500 truncate max-w-[120px]" title={record.datasetLicenseLabel}>
+                            {record.datasetLicenseLabel || 'CC BY-NC'}
+                          </span>
+                        </div>
+
+                        {/* Source Platform Badge */}
+                        <div className="flex items-center gap-1.5 text-[10px] bg-stone-50 px-2 py-1 rounded-lg border border-stone-100">
+                          <span className="text-stone-400 shrink-0">🏛️</span>
+                          <span className="text-emerald-900 font-semibold truncate" title={record.sourcePlatform}>
+                            {record.sourcePlatform || 'GBIF Occurrence Network'}
+                          </span>
+                        </div>
+
+                        {/* Photo or Botanical Icon */}
+                        {hasPhoto ? (
+                          <div className="aspect-[16/10] rounded-xl overflow-hidden bg-stone-100 border border-stone-200 relative">
+                            <img
+                              src={record.imageUrl}
+                              alt={record.scientificName}
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                              loading="lazy"
+                            />
+                            <div className="absolute bottom-0 inset-x-0 bg-black/70 backdrop-blur-xs text-white text-[8px] px-1.5 py-0.5 truncate">
+                              Photo: {record.mediaAttribution?.creator || 'Observer'}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="aspect-[16/7] rounded-xl bg-stone-50 border border-stone-200/80 flex flex-col items-center justify-center text-center p-2 text-stone-400">
+                            <span className="text-xl">🌿</span>
+                            <span className="text-[10px] text-stone-500 font-medium">Botanical Specimen</span>
+                            <span className="text-[9px] text-stone-400">
+                              {record.mediaAttribution ? 'Photo protected by copyright' : 'Herbarium / field record'}
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Titles */}
+                        <div>
+                          <h4 className="font-serif-display text-sm font-bold text-stone-900 group-hover:text-emerald-900 transition-colors line-clamp-1">
+                            {record.commonName || record.scientificName}
+                          </h4>
+                          <p className="text-[11px] text-stone-600 italic line-clamp-1">
+                            {record.scientificName}
+                          </p>
+                          <p className="text-[10px] text-emerald-800 font-medium mt-0.5">
+                            Family: {record.family}
+                          </p>
+                        </div>
+
+                        {/* Observation Details */}
+                        <div className="space-y-1 text-[11px] text-stone-600 bg-stone-50/80 p-2.5 rounded-xl border border-stone-100">
+                          <div className="flex items-start gap-1">
+                            <span className="text-stone-400 shrink-0">📍</span>
+                            <span className="line-clamp-2 text-stone-700">{record.locality}</span>
+                          </div>
+                          {record.eventDate && (
+                            <div className="flex items-center gap-1">
+                              <span className="text-stone-400 shrink-0">📅</span>
+                              <span className="text-stone-700">{record.eventDate}</span>
+                            </div>
+                          )}
+                          <div className="flex items-center gap-1">
+                            <span className="text-stone-400 shrink-0">👤</span>
+                            <span className="text-stone-700 truncate">{record.recordedBy || 'Naturalist Observer'}</span>
+                          </div>
+                        </div>
+
+                        {/* Coordinate Precision Badge */}
+                        <div>
+                          {record.hasValidCoordinates && record.coordinates ? (
+                            <div className="flex items-center gap-1.5 text-[10px]">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 shrink-0" />
+                              <span className="font-mono text-stone-700">
+                                {record.coordinates.lat.toFixed(4)}°, {record.coordinates.lng.toFixed(4)}°
+                              </span>
+                              {record.coordinateStatus === 'imprecise' && (
+                                <span className="bg-amber-100 text-amber-900 px-1.5 py-0.2 rounded text-[9px] font-semibold">
+                                  ±{Math.round((record.coordinateUncertaintyInMeters || 10000)/1000)}km
+                                </span>
+                              )}
+                              {record.coordinateStatus === 'sensitive_generalized' && (
+                                <span className="bg-amber-100 text-amber-900 px-1.5 py-0.2 rounded text-[9px] font-semibold">
+                                  Generalized
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1.5 text-[10px] text-amber-800 bg-amber-50 px-2 py-1 rounded-lg border border-amber-200">
+                              <span>🛡️</span>
+                              <span>Coordinates withheld / missing</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Card Footer Actions */}
+                      <div className="pt-3 mt-3 border-t border-stone-200/80 flex items-center justify-between gap-2 text-xs">
+                        {record.hasValidCoordinates && record.coordinates ? (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleSelectIndiaCard(record);
+                            }}
+                            className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-800 hover:text-emerald-950 hover:underline cursor-pointer"
+                          >
+                            <MapPin className="w-3 h-3 text-emerald-700" />
+                            <span>Show on Map</span>
+                          </button>
+                        ) : (
+                          <span className="text-[10px] text-stone-400 italic">
+                            Unplotted (No GPS)
+                          </span>
+                        )}
+
+                        <div className="flex items-center gap-2">
+                          {record.originalRecordUrl && record.originalRecordUrl !== record.gbifUrl && (
+                            <a
+                              href={record.originalRecordUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-emerald-800 hover:underline"
+                              title="Open original observation record"
+                            >
+                              <span>Record</span>
+                              <ExternalLink className="w-2.5 h-2.5" />
+                            </a>
+                          )}
+                          <a
+                            href={record.gbifUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-stone-500 hover:text-emerald-800 hover:underline"
+                            title="Open record on GBIF"
+                          >
+                            <span>GBIF</span>
+                            <ExternalLink className="w-2.5 h-2.5" />
+                          </a>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Pagination / Load More Controls (Requirement 6) */}
+            {indiaRecords.length > 0 && (
+              <div className="pt-4 pb-2 flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-stone-200">
+                <div className="text-xs text-stone-600 text-center sm:text-left">
+                  Showing <strong>{indiaRecords.length}</strong> of{' '}
+                  <strong>{indiaMeta.totalCount.toLocaleString()}</strong> documented occurrences across India
+                </div>
+
+                {hasMoreIndia ? (
+                  <button
+                    type="button"
+                    onClick={handleLoadMoreIndia}
+                    disabled={isLoadingMoreIndia}
+                    className="px-5 py-2.5 bg-emerald-800 hover:bg-emerald-900 disabled:opacity-60 text-white rounded-xl text-xs font-semibold cursor-pointer shadow-xs transition-colors inline-flex items-center gap-2"
+                  >
+                    {isLoadingMoreIndia ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Loading next page from GBIF...</span>
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>Load More India Observations</span>
+                      </>
+                    )}
+                  </button>
+                ) : (
+                  <span className="text-xs font-medium text-stone-500 bg-stone-100 px-3.5 py-1.5 rounded-xl border border-stone-200">
+                    All available records from selected source loaded
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </section>
   );

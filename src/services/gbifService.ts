@@ -203,16 +203,31 @@ export interface GbifOccurrenceItem {
   }>;
 }
 
+export interface MediaAttribution {
+  identifier: string;
+  creator?: string;
+  rightsHolder?: string;
+  license?: string;
+  licenseLabel: string;
+  permitsReuse: boolean;
+  references?: string;
+}
+
+export type CoordinatePrecisionStatus = 'precise' | 'imprecise' | 'sensitive_generalized' | 'missing';
+
 export interface PlantOccurrenceRecord {
   id: string;
   gbifKey: number;
   scientificName: string;
   commonName?: string;
   family: string;
-  coordinates: {
+  coordinates?: {
     lat: number;
     lng: number;
-  };
+  } | null;
+  hasValidCoordinates: boolean;
+  coordinateStatus: CoordinatePrecisionStatus;
+  coordinatePrecisionNotice?: string;
   eventDate?: string;
   year?: number;
   country?: string;
@@ -226,6 +241,28 @@ export interface PlantOccurrenceRecord {
   imageUrl?: string;
   gbifUrl: string;
   isRealData: true;
+  // Extended metadata for India botanical observations
+  recordedBy?: string;
+  datasetLicense?: string;
+  datasetLicenseLabel?: string;
+  mediaAttribution?: MediaAttribution;
+  hasSensitiveLocation?: boolean;
+  dataGeneralizations?: string;
+  isGeoreferenced?: boolean;
+  sourcePlatform: string;
+  originalRecordUrl?: string;
+}
+
+export type IndiaSourceFilter = 'all' | 'plantnet' | 'human_obs' | 'specimens';
+
+export interface GbifIndiaFetchResult {
+  records: PlantOccurrenceRecord[];
+  totalCount: number;
+  georeferencedCount: number;
+  missingCoordsCount: number;
+  skippedCount: number;
+  hasMore: boolean;
+  offset: number;
 }
 
 export interface SpeciesResolutionResult {
@@ -290,6 +327,12 @@ const COMMON_TO_SCIENTIFIC_MAP: Record<string, { scientific: string; common: str
   papaya: { scientific: 'Carica papaya', common: 'Papaya', family: 'Caricaceae' },
   ginger: { scientific: 'Zingiber officinale', common: 'Ginger', family: 'Zingiberaceae' },
   turmeric: { scientific: 'Curcuma longa', common: 'Turmeric', family: 'Zingiberaceae' },
+  sandalwood: { scientific: 'Santalum album', common: 'Indian Sandalwood (Chandan)', family: 'Santalaceae' },
+  gulmohar: { scientific: 'Delonix regia', common: 'Gulmohar (Royal Poinciana)', family: 'Fabaceae' },
+  amla: { scientific: 'Phyllanthus emblica', common: 'Indian Gooseberry (Amla)', family: 'Phyllanthaceae' },
+  jamun: { scientific: 'Syzygium cumini', common: 'Black Plum (Jamun)', family: 'Myrtaceae' },
+  champa: { scientific: 'Plumeria rubra', common: 'Frangipani (Champa)', family: 'Apocynaceae' },
+  palash: { scientific: 'Butea monosperma', common: 'Flame of the Forest (Palash)', family: 'Fabaceae' },
 };
 
 // GBIF Backbone Taxonomy Dataset Key
@@ -478,7 +521,8 @@ export async function fetchGbifOccurrencesByTaxon(
       return [];
     }
 
-    return parseValidGbifOccurrences(data.results);
+    const parsed = parseValidGbifOccurrences(data.results);
+    return parsed.records;
   } catch (err: unknown) {
     console.error('[GBIF API] Occurrence search error:', err);
     throw err;
@@ -486,48 +530,221 @@ export async function fetchGbifOccurrencesByTaxon(
 }
 
 /**
+ * Formats a raw license URL or code into a clean, human-readable license label
+ * and determines if open reuse is permitted.
+ */
+export function formatGbifLicense(licenseStr?: string): { code: string; label: string; permitsReuse: boolean } {
+  if (!licenseStr || typeof licenseStr !== 'string') {
+    return { code: 'unknown', label: 'Unspecified License', permitsReuse: false };
+  }
+  const clean = licenseStr.toLowerCase().trim();
+  if (clean.includes('zero') || clean.includes('cc0') || clean.includes('publicdomain') || clean.includes('/zero/1.0')) {
+    return { code: 'cc0', label: 'CC0 1.0 (Public Domain)', permitsReuse: true };
+  }
+  if (clean.includes('by-nc-sa')) {
+    return { code: 'cc-by-nc-sa', label: 'CC BY-NC-SA 4.0', permitsReuse: true };
+  }
+  if (clean.includes('by-nc-nd')) {
+    return { code: 'cc-by-nc-nd', label: 'CC BY-NC-ND 4.0', permitsReuse: true };
+  }
+  if (clean.includes('by-nc')) {
+    return { code: 'cc-by-nc', label: 'CC BY-NC 4.0', permitsReuse: true };
+  }
+  if (clean.includes('by-sa')) {
+    return { code: 'cc-by-sa', label: 'CC BY-SA 4.0', permitsReuse: true };
+  }
+  if (clean.includes('by-nd')) {
+    return { code: 'cc-by-nd', label: 'CC BY-ND 4.0', permitsReuse: true };
+  }
+  if (clean.includes('/by/4.0') || clean.includes('/by/3.0') || clean.includes('cc-by') || clean.includes('/licenses/by/')) {
+    return { code: 'cc-by', label: 'CC BY 4.0', permitsReuse: true };
+  }
+  if (clean.includes('creativecommons')) {
+    return { code: 'cc', label: 'Creative Commons (Reuse Permitted)', permitsReuse: true };
+  }
+  if (clean.includes('copyright') || clean.includes('all rights reserved') || clean.includes('arr')) {
+    return { code: 'copyright', label: 'All Rights Reserved (No external reuse)', permitsReuse: false };
+  }
+  // If unrecognized URI, strip protocol for display and avoid reuse assumption
+  const simplified = licenseStr.replace(/^https?:\/\//, '').replace(/\/legalcode.*$/, '');
+  return { code: 'custom', label: simplified, permitsReuse: false };
+}
+
+/**
  * Validates and converts raw GBIF occurrence results to clean PlantOccurrenceRecord items.
  * Strictly verifies decimalLatitude and decimalLongitude.
+ * Respects external media licenses (only exposes imageUrl when license permits reuse).
+ * Preserves observer attribution, dataset license, and sensitive species coordinates flags.
+ * Gracefully flags missing coordinates without guessing or inventing false locations.
  */
-export function parseValidGbifOccurrences(results: any[]): PlantOccurrenceRecord[] {
+export function parseValidGbifOccurrences(
+  results: any[],
+  options?: { isIndiaOnly?: boolean }
+): {
+  records: PlantOccurrenceRecord[];
+  georeferencedCount: number;
+  missingCoordsCount: number;
+  skippedCount: number;
+} {
   const records: PlantOccurrenceRecord[] = [];
+  const seenKeys = new Set<number>();
+  let georeferencedCount = 0;
+  let missingCoordsCount = 0;
+  let skippedCount = 0;
 
   for (const item of results) {
+    if (!item || !item.key || seenKeys.has(item.key)) {
+      continue;
+    }
+    seenKeys.add(item.key);
+
     // 1. Validate numerical coordinates
-    const lat = item.decimalLatitude;
-    const lng = item.decimalLongitude;
+    const rawLat = item.decimalLatitude;
+    const rawLng = item.decimalLongitude;
+    const isNumLat = typeof rawLat === 'number' && !isNaN(rawLat);
+    const isNumLng = typeof rawLng === 'number' && !isNaN(rawLng);
 
-    if (typeof lat !== 'number' || typeof lng !== 'number' || isNaN(lat) || isNaN(lng)) {
-      continue;
-    }
+    const hasValidCoords =
+      isNumLat &&
+      isNumLng &&
+      rawLat >= -90 &&
+      rawLat <= 90 &&
+      rawLng >= -180 &&
+      rawLng <= 180 &&
+      !(rawLat === 0 && rawLng === 0); // Exclude Null Island placeholder
 
-    // 2. Validate valid coordinate range
-    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-      continue;
-    }
-
-    // 3. Extract media image if available
-    let imageUrl: string | undefined = undefined;
-    if (item.media && Array.isArray(item.media) && item.media.length > 0) {
-      const imgItem = item.media.find(
-        (m: any) => {
-          const id = m.identifier || m['http://purl.org/dc/terms/identifier'];
-          const type = m.type || m['http://purl.org/dc/terms/type'];
-          const format = m.format || m['http://purl.org/dc/terms/format'];
-          return (
-            id &&
-            (type === 'StillImage' ||
-              format?.includes('image') ||
-              /\.(jpg|jpeg|png|webp)/i.test(id))
-          );
+    // If strictly filtered to India, verify country code or subcontinental envelope
+    if (options?.isIndiaOnly) {
+      if (hasValidCoords) {
+        const inIndiaBounds = rawLat >= 5 && rawLat <= 39 && rawLng >= 66 && rawLng <= 99;
+        if (!inIndiaBounds && item.countryCode !== 'IN' && item.country !== 'India') {
+          skippedCount++;
+          continue;
         }
-      );
-      if (imgItem) {
-        imageUrl = imgItem.identifier || imgItem['http://purl.org/dc/terms/identifier'];
+      } else {
+        if (item.countryCode !== 'IN' && item.country !== 'India') {
+          skippedCount++;
+          continue;
+        }
       }
     }
 
-    // 4. Formatted date string
+    // 2. Sensitive species location generalization & coordinate status
+    const hasSensitiveLocation = Boolean(
+      item.dataGeneralizations ||
+      item.informationWithheld ||
+      (item.coordinateUncertaintyInMeters && item.coordinateUncertaintyInMeters > 5000)
+    );
+
+    let coordinateStatus: CoordinatePrecisionStatus;
+    let coordinatePrecisionNotice: string;
+    let coordinates: { lat: number; lng: number } | null = null;
+    let isGeoreferenced = false;
+
+    if (hasValidCoords) {
+      coordinates = { lat: rawLat, lng: rawLng };
+      isGeoreferenced = true;
+      georeferencedCount++;
+
+      if (item.dataGeneralizations || item.informationWithheld) {
+        coordinateStatus = 'sensitive_generalized';
+        coordinatePrecisionNotice = `Location generalized (${item.dataGeneralizations || 'withheld to protect sensitive flora'})`;
+      } else if (item.coordinateUncertaintyInMeters && item.coordinateUncertaintyInMeters > 5000) {
+        coordinateStatus = 'imprecise';
+        coordinatePrecisionNotice = `Imprecise coordinates (uncertainty ±${Math.round(item.coordinateUncertaintyInMeters / 1000)} km)`;
+      } else {
+        coordinateStatus = 'precise';
+        coordinatePrecisionNotice = item.coordinateUncertaintyInMeters
+          ? `Precise GPS fix (±${Math.round(item.coordinateUncertaintyInMeters)} m)`
+          : 'Geographic coordinates recorded';
+      }
+    } else {
+      missingCoordsCount++;
+      coordinateStatus = 'missing';
+      coordinatePrecisionNotice = 'No geographic coordinates recorded (not plotted on map)';
+    }
+
+    // 3. Extract media image and strictly check license for reuse
+    let imageUrl: string | undefined = undefined;
+    let mediaAttribution: MediaAttribution | undefined = undefined;
+
+    // Gather candidate media from both item.media and multimedia extensions
+    const candidateMedia: any[] = [];
+    if (Array.isArray(item.media)) {
+      candidateMedia.push(...item.media);
+    }
+    const extMedia = item.extensions?.['http://rs.gbif.org/terms/1.0/Multimedia'];
+    if (Array.isArray(extMedia)) {
+      candidateMedia.push(...extMedia);
+    }
+
+    if (candidateMedia.length > 0) {
+      const imgItem = candidateMedia.find((m: any) => {
+        const id = m.identifier || m['http://purl.org/dc/terms/identifier'];
+        const type = m.type || m['http://purl.org/dc/terms/type'];
+        const format = m.format || m['http://purl.org/dc/terms/format'];
+        return (
+          id &&
+          (type === 'StillImage' ||
+            format?.includes('image') ||
+            /\.(jpg|jpeg|png|webp)/i.test(id))
+        );
+      });
+
+      if (imgItem) {
+        const rawPhotoUrl = imgItem.identifier || imgItem['http://purl.org/dc/terms/identifier'];
+        const rawPhotoLicense =
+          imgItem.license ||
+          imgItem['http://purl.org/dc/terms/license'] ||
+          item.license ||
+          '';
+        const photoLicenseInfo = formatGbifLicense(rawPhotoLicense);
+        const creator =
+          imgItem.creator ||
+          imgItem['http://purl.org/dc/terms/creator'] ||
+          imgItem.rightsHolder ||
+          imgItem['http://purl.org/dc/terms/rightsHolder'] ||
+          item.recordedBy ||
+          'Naturalist Observer';
+
+        const rightsHolder = imgItem.rightsHolder || imgItem['http://purl.org/dc/terms/rightsHolder'];
+        const references =
+          imgItem.references ||
+          imgItem['http://purl.org/dc/terms/references'] ||
+          item.references ||
+          item.occurrenceID;
+
+        mediaAttribution = {
+          identifier: rawPhotoUrl,
+          creator: typeof creator === 'string' ? creator.trim() : 'Naturalist Observer',
+          rightsHolder: typeof rightsHolder === 'string' ? rightsHolder.trim() : undefined,
+          license: rawPhotoLicense,
+          licenseLabel: photoLicenseInfo.label,
+          permitsReuse: photoLicenseInfo.permitsReuse,
+          references: typeof references === 'string' ? references : undefined,
+        };
+
+        // ONLY display external photo when its license explicitly permits open reuse
+        if (photoLicenseInfo.permitsReuse) {
+          imageUrl = rawPhotoUrl;
+        }
+      }
+    }
+
+    // 4. Common name resolution (from vernacular or dictionary)
+    const sciName = item.acceptedScientificName || item.scientificName || 'Botanical observation';
+    let commonName = item.vernacularName;
+    if (!commonName) {
+      const sciLower = sciName.toLowerCase();
+      for (const entry of Object.values(COMMON_TO_SCIENTIFIC_MAP)) {
+        if (sciLower.includes(entry.scientific.toLowerCase())) {
+          commonName = entry.common;
+          break;
+        }
+      }
+    }
+
+    // 5. Formatted date string
     let eventDateStr: string | undefined = undefined;
     if (item.eventDate) {
       try {
@@ -548,25 +765,59 @@ export function parseValidGbifOccurrences(results: any[]): PlantOccurrenceRecord
       eventDateStr = String(item.year);
     }
 
-    // 5. Locality text
-    const locParts = [item.locality, item.stateProvince, item.country].filter(Boolean);
+    // 6. Locality and state text
+    const locParts = [item.locality, item.stateProvince, item.country || 'India'].filter(Boolean);
     const locality =
       locParts.length > 0
         ? locParts.join(', ')
-        : item.country
-        ? item.country
-        : 'Georeferenced field record';
+        : item.country || 'India';
+
+    // 7. Dataset, publisher platform, and licensing
+    const datasetLicenseInfo = formatGbifLicense(item.license);
+    const observer = item.recordedBy || 'Field Naturalist Observer';
+
+    // Source platform determination (Pl@ntNet, iNaturalist, BSI, Herbarium, etc.)
+    let sourcePlatform = 'GBIF Occurrence Network';
+    const dKey = item.datasetKey || '';
+    const dName = (item.datasetName || '').toLowerCase();
+    const instCode = item.institutionCode || '';
+    if (
+      dKey === '14d5676a-2c54-4f94-9023-1e8dcd822aa0' ||
+      dKey === '7a3679ef-5582-4aaa-81f0-8c2545cafc81' ||
+      dName.includes('plantnet')
+    ) {
+      sourcePlatform = 'Pl@ntNet (via GBIF)';
+    } else if (dName.includes('inaturalist')) {
+      sourcePlatform = 'iNaturalist (via GBIF)';
+    } else if (dName.includes('botanical survey of india') || instCode === 'BSI') {
+      sourcePlatform = 'Botanical Survey of India (BSI)';
+    } else if (item.datasetName) {
+      sourcePlatform = item.datasetName.length > 36 ? item.datasetName.slice(0, 33) + '...' : item.datasetName;
+    } else if (instCode) {
+      sourcePlatform = `${instCode} Herbarium`;
+    }
+
+    // Determine link to the original observation record
+    let originalRecordUrl = `https://www.gbif.org/occurrence/${item.key}`;
+    if (typeof item.references === 'string' && item.references.startsWith('http')) {
+      originalRecordUrl = item.references;
+    } else if (typeof item.occurrenceID === 'string' && item.occurrenceID.startsWith('http')) {
+      originalRecordUrl = item.occurrenceID;
+    }
 
     records.push({
       id: `gbif-${item.key}`,
       gbifKey: item.key,
-      scientificName: item.acceptedScientificName || item.scientificName || 'Botanical observation',
-      commonName: item.vernacularName,
+      scientificName: sciName,
+      commonName,
       family: item.family || 'Plantae',
-      coordinates: { lat, lng },
+      coordinates,
+      hasValidCoordinates: isGeoreferenced,
+      coordinateStatus,
+      coordinatePrecisionNotice,
       eventDate: eventDateStr,
       year: item.year,
-      country: item.country,
+      country: item.country || 'India',
       stateProvince: item.stateProvince,
       locality,
       basisOfRecord: item.basisOfRecord?.replace(/_/g, ' ').toLowerCase(),
@@ -577,8 +828,108 @@ export function parseValidGbifOccurrences(results: any[]): PlantOccurrenceRecord
       imageUrl,
       gbifUrl: `https://www.gbif.org/occurrence/${item.key}`,
       isRealData: true,
+      recordedBy: observer,
+      datasetLicense: item.license,
+      datasetLicenseLabel: datasetLicenseInfo.label,
+      mediaAttribution,
+      hasSensitiveLocation,
+      dataGeneralizations: item.dataGeneralizations,
+      isGeoreferenced,
+      sourcePlatform,
+      originalRecordUrl,
     });
   }
 
-  return records;
+  return { records, georeferencedCount, missingCoordsCount, skippedCount };
 }
+
+/**
+ * 3. GBIF India Plant Occurrences API
+ * URL: https://api.gbif.org/v1/occurrence/search
+ *
+ * Fetches verified public plant observations recorded in India from GBIF.
+ * Filters strictly to kingdomKey=6 (Plantae) and country=IN.
+ * Supports species filtering, source platform filtering (including Pl@ntNet), pagination offset,
+ * and handles missing coordinates / sensitive species protection without guessing.
+ */
+export async function fetchGbifIndiaOccurrences(
+  query?: string,
+  limit: number = 60,
+  offset: number = 0,
+  sourceFilter: IndiaSourceFilter = 'all'
+): Promise<GbifIndiaFetchResult> {
+  try {
+    const url = new URL('https://api.gbif.org/v1/occurrence/search');
+    url.searchParams.set('country', 'IN');
+    url.searchParams.set('kingdomKey', PLANTAE_KINGDOM_KEY.toString()); // Plantae (6)
+    url.searchParams.set('limit', Math.min(limit, 100).toString());
+    url.searchParams.set('offset', Math.max(0, offset).toString());
+
+    if (sourceFilter === 'plantnet') {
+      // Specifically query Pl@ntNet published occurrences in India
+      url.searchParams.set('datasetKey', '14d5676a-2c54-4f94-9023-1e8dcd822aa0');
+    } else if (sourceFilter === 'human_obs') {
+      url.searchParams.set('basisOfRecord', 'HUMAN_OBSERVATION');
+    } else if (sourceFilter === 'specimens') {
+      url.searchParams.set('basisOfRecord', 'PRESERVED_SPECIMEN');
+    } else {
+      // Permitted Basis of Record filters across all GBIF datasets
+      url.searchParams.append('basisOfRecord', 'HUMAN_OBSERVATION');
+      url.searchParams.append('basisOfRecord', 'OBSERVATION');
+      url.searchParams.append('basisOfRecord', 'MACHINE_OBSERVATION');
+      url.searchParams.append('basisOfRecord', 'PRESERVED_SPECIMEN');
+    }
+
+    const cleanQuery = query?.trim();
+    if (cleanQuery) {
+      const lower = cleanQuery.toLowerCase();
+      const mapped = COMMON_TO_SCIENTIFIC_MAP[lower];
+      if (mapped) {
+        url.searchParams.set('scientificName', mapped.scientific);
+      } else {
+        url.searchParams.set('q', cleanQuery);
+      }
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+    const res = await fetch(url.toString(), {
+      signal: controller.signal,
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'WhereIsMyPlant-Academic/1.0',
+      },
+    });
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      throw new Error(`GBIF API returned HTTP ${res.status}: ${res.statusText}`);
+    }
+
+    const data = await res.json();
+    const rawResults = Array.isArray(data.results) ? data.results : [];
+    const totalCount = typeof data.count === 'number' ? data.count : rawResults.length;
+
+    const { records, georeferencedCount, missingCoordsCount, skippedCount } = parseValidGbifOccurrences(
+      rawResults,
+      { isIndiaOnly: true }
+    );
+
+    const endOfRecords = Boolean(data.endOfRecords) || (offset + rawResults.length >= totalCount);
+
+    return {
+      records,
+      totalCount,
+      georeferencedCount,
+      missingCoordsCount,
+      skippedCount,
+      hasMore: !endOfRecords && records.length > 0,
+      offset,
+    };
+  } catch (err: unknown) {
+    console.error('[GBIF API] India occurrences search error:', err);
+    throw err;
+  }
+}
+
