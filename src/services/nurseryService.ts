@@ -334,10 +334,10 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 
 // Public Overpass API mirrors with browser CORS support
 const OVERPASS_ENDPOINTS = [
-  'https://overpass.kumi.systems/api/interpreter',
   'https://overpass.private.coffee/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://lz4.overpass-api.de/api/interpreter',
   'https://overpass-api.de/api/interpreter',
-  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
 ];
 
 /**
@@ -350,14 +350,9 @@ async function fetchFromOverpassApi(
 ): Promise<{ success: boolean; nurseries: PlantNursery[]; rateLimited: boolean }> {
   const query = `[out:json][timeout:15];
 (
-  node["shop"="garden_centre"](around:${radiusMeters},${lat},${lng});
-  way["shop"="garden_centre"](around:${radiusMeters},${lat},${lng});
-  node["shop"="plant_nursery"](around:${radiusMeters},${lat},${lng});
-  way["shop"="plant_nursery"](around:${radiusMeters},${lat},${lng});
-  node["landuse"="plant_nursery"](around:${radiusMeters},${lat},${lng});
-  way["landuse"="plant_nursery"](around:${radiusMeters},${lat},${lng});
-  node["shop"="florist"](around:${radiusMeters},${lat},${lng});
-  way["shop"="florist"](around:${radiusMeters},${lat},${lng});
+  nwr["shop"~"nursery|garden_centre|plant_nursery|florist|flowers|plants"](around:${radiusMeters},${lat},${lng});
+  nwr["landuse"="plant_nursery"](around:${radiusMeters},${lat},${lng});
+  nwr["name"~"nursery|garden centre|plant shop", i](around:${radiusMeters},${lat},${lng});
 );
 out center tags 80;`;
 
@@ -366,37 +361,42 @@ out center tags 80;`;
   for (const endpoint of OVERPASS_ENDPOINTS) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 7500);
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
 
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-          'User-Agent': 'WhereIsMyPlant/1.0 (Botanical Discovery Platform)',
         },
         body: `data=${encodeURIComponent(query)}`,
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
 
+      // Handle rate limits
       if (res.status === 429) {
         rateLimited = true;
         continue;
       }
 
-      if (res.ok) {
-        try {
-          const data = await res.json();
-          if (data && Array.isArray(data.elements)) {
-            const nurseries = parseOverpassElements(data.elements, lat, lng, radiusMeters);
-            return { success: true, nurseries, rateLimited: false };
-          }
-        } catch (_jsonErr) {
-          // If response body is not JSON, try next mirror
-        }
+      // Treat HTTP 504 and any other non-OK responses as failures for this source and try next mirror
+      if (!res.ok) {
+        continue;
+      }
+
+      // Safely verify text response before parsing JSON (reject HTML/XML error pages)
+      const text = await res.text();
+      if (!text || text.trim().startsWith('<') || text.startsWith('Please include')) {
+        continue;
+      }
+
+      const data = JSON.parse(text);
+      if (data && Array.isArray(data.elements)) {
+        const nurseries = parseOverpassElements(data.elements, lat, lng, radiusMeters);
+        return { success: true, nurseries, rateLimited: false };
       }
     } catch (_err) {
-      // Continue to next mirror
+      // Continue to next mirror on timeout, CORS/network drop, or parse error
     }
   }
 
@@ -414,7 +414,7 @@ async function fetchFromClientNominatim(
   const bbox = calculateBoundingBox(lat, lng, radiusMeters);
   const viewboxStr = `${bbox.minLon},${bbox.maxLat},${bbox.maxLon},${bbox.minLat}`;
 
-  const queries = ['garden centre', 'plant nursery', 'plant shop'];
+  const queries = ['garden centre', 'plant nursery', 'plant shop', 'nursery', 'florist'];
   const allResults: PlantNursery[] = [];
   const seenIds = new Set<string>();
   let rateLimited = false;
@@ -430,9 +430,6 @@ async function fetchFromClientNominatim(
       )}&format=json&limit=40&viewbox=${viewboxStr}&bounded=1&addressdetails=1&extratags=1`;
 
       const res = await fetch(url, {
-        headers: {
-          'User-Agent': 'WhereIsMyPlant/1.0 (Botanical Discovery Platform)',
-        },
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
@@ -442,16 +439,24 @@ async function fetchFromClientNominatim(
         continue;
       }
 
-      if (res.ok) {
+      // Treat non-OK status as failure
+      if (!res.ok) {
+        continue;
+      }
+
+      const text = await res.text();
+      if (!text || text.trim().startsWith('<')) {
+        continue;
+      }
+
+      const data = JSON.parse(text);
+      if (Array.isArray(data)) {
         hadSuccessfulResponse = true;
-        const data = await res.json();
-        if (Array.isArray(data)) {
-          const parsed = parseNominatimFeatures(data, lat, lng, radiusMeters);
-          for (const item of parsed) {
-            if (!seenIds.has(item.id)) {
-              seenIds.add(item.id);
-              allResults.push(item);
-            }
+        const parsed = parseNominatimFeatures(data, lat, lng, radiusMeters);
+        for (const item of parsed) {
+          if (!seenIds.has(item.id)) {
+            seenIds.add(item.id);
+            allResults.push(item);
           }
         }
       }
@@ -525,12 +530,22 @@ export async function fetchNearbyPlantNurseries(
 
   // 2. OpenStreetMap Overpass API (Primary Open-Data Source)
   const overpassResult = await fetchFromOverpassApi(lat, lng, clampedRadius);
+  if (overpassResult.success && overpassResult.nurseries.length > 0) {
+    return overpassResult.nurseries;
+  }
+
+  // 3. OpenStreetMap Nominatim Fallback (runs if Overpass failed or returned 0)
+  const nominatimResult = await fetchFromClientNominatim(lat, lng, clampedRadius);
+  if (nominatimResult.success && nominatimResult.nurseries.length > 0) {
+    return nominatimResult.nurseries;
+  }
+
+  // If Overpass succeeded with 0 items (and Nominatim also returned 0)
   if (overpassResult.success) {
     return overpassResult.nurseries;
   }
 
-  // 3. OpenStreetMap Nominatim Fallback
-  const nominatimResult = await fetchFromClientNominatim(lat, lng, clampedRadius);
+  // If Nominatim succeeded with 0 items
   if (nominatimResult.success) {
     return nominatimResult.nurseries;
   }
