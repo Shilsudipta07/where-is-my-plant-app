@@ -459,16 +459,6 @@ async function fetchFromClientNominatim(
       // Continue to next query
     }
   }
-              seenIds.add(item.id);
-              allResults.push(item);
-            }
-          }
-        }
-      }
-    } catch (_err) {
-      // Continue to next query
-    }
-  }
 
   allResults.sort((a, b) => a.distanceMeters - b.distanceMeters);
   return {
