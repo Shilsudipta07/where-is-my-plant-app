@@ -8,6 +8,7 @@ interface HeroSectionProps {
   onSearch: (e: React.FormEvent) => void;
   onFindNearMe: () => void;
   onOpenAddPlant: () => void;
+  onOpenHowToSubmit?: () => void;
   onOpenMap: () => void;
   onQuickSelectPlant: (plantId: string) => void;
 }
@@ -18,6 +19,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
   onSearch,
   onFindNearMe,
   onOpenAddPlant,
+  onOpenHowToSubmit,
   onOpenMap,
   onQuickSelectPlant,
 }) => {
@@ -131,6 +133,18 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
               >
                 <Plus className="w-4 h-4 text-purple-200 stroke-[2.5]" />
                 <span>Submit a Plant</span>
+              </button>
+
+              {/* How to Submit Plant (Step-by-step naturalist guide modal trigger) */}
+              <button
+                type="button"
+                onClick={onOpenHowToSubmit}
+                className="inline-flex items-center gap-2 px-4.5 py-3 rounded-xl bg-white hover:bg-emerald-50 text-emerald-900 hover:text-emerald-950 font-semibold text-sm active:scale-95 shadow-2xs transition-all cursor-pointer whitespace-nowrap border border-emerald-300 hover:border-emerald-500"
+                title="Learn how to record and submit a plant observation"
+                aria-label="How to Submit Plant instruction guide"
+              >
+                <BookOpen className="w-4 h-4 text-emerald-700" />
+                <span>How to Submit Plant</span>
               </button>
 
               {/* Explore Map */}

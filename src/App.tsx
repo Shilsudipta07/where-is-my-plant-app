@@ -20,16 +20,18 @@ import { PlantDetailsPage } from './components/PlantDetailsPage';
 import { CarbonDashboard } from './components/CarbonDashboard';
 import { AccountView } from './components/AccountView';
 import { Footer } from './components/Footer';
+import { HowToSubmitModal } from './components/HowToSubmitModal';
 import { getPlantsFromFirestore } from './services/firestoreService';
 import { PlantOccurrenceRecord, SpeciesResolutionResult } from './services/gbifService';
 import { INaturalistObservationRecord, INaturalistTaxon, CommunityObservation } from './types/plant';
-import { Sparkles, ArrowRight, Compass, Plus, Check, ArrowLeft, Camera } from 'lucide-react';
+import { Sparkles, ArrowRight, Compass, Plus, Check, ArrowLeft, Camera, BookOpen } from 'lucide-react';
 
 const STORAGE_KEY = 'where_is_my_plant_items_v2';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('home');
   const [isNearMeActive, setIsNearMeActive] = useState<boolean>(false);
+  const [isHowToSubmitOpen, setIsHowToSubmitOpen] = useState<boolean>(false);
   const [plants, setPlants] = useState<Plant[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -249,6 +251,7 @@ export default function App() {
               onSearch={handleSearchSubmit}
               onFindNearMe={handleFindNearMe}
               onOpenAddPlant={handleOpenAddPlant}
+              onOpenHowToSubmit={() => setIsHowToSubmitOpen(true)}
               onOpenMap={handleOpenMap}
               onQuickSelectPlant={handleQuickSelectPlant}
             />
@@ -322,6 +325,14 @@ export default function App() {
                     >
                       <Camera className="w-4 h-4 text-purple-200" />
                       <span>Submit a Plant</span>
+                    </button>
+                    <button
+                      onClick={() => setIsHowToSubmitOpen(true)}
+                      className="px-4.5 py-2.5 bg-emerald-900/40 hover:bg-emerald-900/70 text-emerald-100 hover:text-white border border-emerald-500/40 hover:border-emerald-400 rounded-xl text-xs font-semibold transition-all cursor-pointer flex items-center gap-2"
+                      title="Learn how to record and submit a plant observation"
+                    >
+                      <BookOpen className="w-4 h-4 text-emerald-300" />
+                      <span>How to Submit Plant</span>
                     </button>
                   </div>
                 </div>
@@ -569,6 +580,16 @@ export default function App() {
         isOpen={isAddModalOpen}
         onClose={() => setIsAddModalOpen(false)}
         onAddPlant={handleAddPlant}
+      />
+
+      {/* How to Submit Instruction Guide Modal */}
+      <HowToSubmitModal
+        isOpen={isHowToSubmitOpen}
+        onClose={() => setIsHowToSubmitOpen(false)}
+        onStartSubmit={() => {
+          setIsHowToSubmitOpen(false);
+          handleOpenAddPlant();
+        }}
       />
 
       {/* Global Footer */}
