@@ -5,6 +5,7 @@ import { heroImg } from '../data/samplePlants';
 interface HeroSectionProps {
   searchQuery: string;
   setSearchQuery: (query: string) => void;
+  sampleCount?: number;
   onSearch: (e: React.FormEvent) => void;
   onFindNearMe: () => void;
   onOpenAddPlant: () => void;
@@ -16,6 +17,7 @@ interface HeroSectionProps {
 export const HeroSection: React.FC<HeroSectionProps> = ({
   searchQuery,
   setSearchQuery,
+  sampleCount = 0,
   onSearch,
   onFindNearMe,
   onOpenAddPlant,
@@ -182,15 +184,19 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
                 {/* Overlaid Botanical Card Info */}
                 <div className="absolute bottom-0 inset-x-0 p-5 text-white">
                   <div className="flex items-center gap-2 text-xs text-emerald-200 mb-1">
-                    <span>Central Greenhouse Conservatory</span>
+                    <span>Botanical Field Reference</span>
                     <span aria-hidden="true">·</span>
-                    <span>Demo Zone A</span>
+                    <span>Sample Flora</span>
                   </div>
                   <h3 className="font-serif-display text-xl font-bold">
-                    Tropical & Native Arboretum
+                    Botanical Reference Collection
                   </h3>
                   <p className="text-xs text-stone-200 mt-1 line-clamp-2">
-                    Explore 8+ documented plant species with student tips, leaf morphology keys, and live map coordinates.
+                    {sampleCount === 0
+                      ? 'No sample species currently loaded. Submit a new observation or explore live community records.'
+                      : `Explore ${sampleCount} curated sample plant ${
+                          sampleCount === 1 ? 'species' : 'species'
+                        } with identification keys, leaf morphology tips, and coordinates.`}
                   </p>
                 </div>
               </div>
@@ -199,9 +205,11 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
               <div className="p-4 grid grid-cols-3 gap-2 text-center divide-x divide-stone-200">
                 <div>
                   <div className="font-mono text-base font-bold text-emerald-900 tabular-nums">
-                    8
+                    {sampleCount}
                   </div>
-                  <div className="text-[11px] text-stone-500">Sample Species</div>
+                  <div className="text-[11px] text-stone-500">
+                    {sampleCount === 1 ? 'Sample Species' : 'Sample Species'}
+                  </div>
                 </div>
                 <div>
                   <div className="font-mono text-base font-bold text-emerald-900 tabular-nums">
@@ -213,7 +221,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
                   <div className="font-mono text-base font-bold text-emerald-900 tabular-nums">
                     Interactive
                   </div>
-                  <div className="text-[11px] text-stone-500">Campus Map</div>
+                  <div className="text-[11px] text-stone-500">Explore Map</div>
                 </div>
               </div>
             </div>

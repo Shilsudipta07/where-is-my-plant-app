@@ -248,6 +248,7 @@ export default function App() {
             <HeroSection
               searchQuery={searchQuery}
               setSearchQuery={setSearchQuery}
+              sampleCount={plants?.length ?? 0}
               onSearch={handleSearchSubmit}
               onFindNearMe={handleFindNearMe}
               onOpenAddPlant={handleOpenAddPlant}
