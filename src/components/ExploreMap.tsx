@@ -24,6 +24,7 @@ import {
   Compass,
   Search,
   RotateCcw,
+  RotateCw,
   Globe,
   Loader2,
   AlertCircle,
@@ -153,6 +154,60 @@ const escapeHtml = (str: string): string => {
     .replace(/'/g, '&#039;');
 };
 
+// Calculates 8-point compass cardinal direction from degrees (0 to 360)
+const getCardinalDirection = (deg: number): string => {
+  const normalized = ((deg % 360) + 360) % 360;
+  if (normalized >= 337.5 || normalized < 22.5) return 'N';
+  if (normalized >= 22.5 && normalized < 67.5) return 'NE';
+  if (normalized >= 67.5 && normalized < 112.5) return 'E';
+  if (normalized >= 112.5 && normalized < 157.5) return 'SE';
+  if (normalized >= 157.5 && normalized < 202.5) return 'S';
+  if (normalized >= 202.5 && normalized < 247.5) return 'SW';
+  if (normalized >= 247.5 && normalized < 292.5) return 'W';
+  return 'NW';
+};
+
+// Determines if a plant record is a genuine user submission from Firestore or local creation
+// Based strictly on trustworthy data schema fields rather than arbitrary ID assumptions
+const isUserSubmittedPlant = (plant: Plant): boolean => {
+  if (!plant) return false;
+  // Trustworthy schema flags set by Firestore mapping and plant submission forms
+  if (plant.isUserAdded === true) return true;
+  if (typeof plant.ownerUid === 'string' && plant.ownerUid.trim().length > 0) return true;
+  if (typeof plant.ownerUsername === 'string' && plant.ownerUsername.trim().length > 0) return true;
+  if (plant.createdAt) return true;
+  return false;
+};
+
+// Strict coordinate validator: validates latitude (-90 to 90) and longitude (-180 to 180)
+// Preserves valid geographic coordinates without inventing false locations.
+const getValidPlantCoordinates = (plant: Plant): Coordinates | null => {
+  if (!plant || !plant.coordinates) return null;
+  const rawLat = (plant.coordinates as any).lat;
+  const rawLng = (plant.coordinates as any).lng;
+  const lat = typeof rawLat === 'string' ? parseFloat(rawLat) : rawLat;
+  const lng = typeof rawLng === 'string' ? parseFloat(rawLng) : rawLng;
+
+  if (
+    typeof lat !== 'number' ||
+    typeof lng !== 'number' ||
+    isNaN(lat) ||
+    isNaN(lng) ||
+    !isFinite(lat) ||
+    !isFinite(lng)
+  ) {
+    return null;
+  }
+
+  // Standard geographic latitude (-90 to 90) and longitude (-180 to 180)
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    return null;
+  }
+
+  return { lat, lng, accuracy: plant.coordinates.accuracy };
+};
+
+
 export const ExploreMap: React.FC<ExploreMapProps> = ({
   plants,
   selectedPlant,
@@ -183,6 +238,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
   const inatMarkersLayerRef = useRef<L.LayerGroup | null>(null);
   const communityMarkersLayerRef = useRef<L.LayerGroup | null>(null);
   const indiaMarkersLayerRef = useRef<L.LayerGroup | null>(null);
+  const userPlantsLayerRef = useRef<L.LayerGroup | null>(null);
   const selectedPlantMarkerLayerRef = useRef<L.LayerGroup | null>(null);
   const nurseryMarkersLayerRef = useRef<L.LayerGroup | null>(null);
   const userMarkerRef = useRef<L.Marker | null>(null);
@@ -334,6 +390,55 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
 
   // Radius options (Requirement 3: 1 km, 5 km, 10 km, 25 km, 50 km; starts with 10 km)
   const [radiusKm, setRadiusKm] = useState<RadiusKmOption>(10);
+
+  // Interactive Map Rotation & Reset North State
+  const [mapRotation, setMapRotation] = useState<number>(0);
+  const [isTouchRotating, setIsTouchRotating] = useState<boolean>(false);
+  const touchStartAngleRef = useRef<number>(0);
+  const touchStartRotationRef = useRef<number>(0);
+
+  const handleResetNorth = useCallback(() => {
+    setIsTouchRotating(false);
+    setMapRotation(0);
+  }, []);
+
+  const handleRotateBy = useCallback((deltaDeg: number) => {
+    setIsTouchRotating(false);
+    setMapRotation((prev) => {
+      let next = (prev + deltaDeg) % 360;
+      if (next < 0) next += 360;
+      return next;
+    });
+  }, []);
+
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      const t1 = e.touches[0];
+      const t2 = e.touches[1];
+      const angle = Math.atan2(t2.clientY - t1.clientY, t2.clientX - t1.clientX) * (180 / Math.PI);
+      touchStartAngleRef.current = angle;
+      touchStartRotationRef.current = mapRotation;
+      setIsTouchRotating(true);
+    }
+  }, [mapRotation]);
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    if (isTouchRotating && e.touches.length === 2) {
+      const t1 = e.touches[0];
+      const t2 = e.touches[1];
+      const currentAngle = Math.atan2(t2.clientY - t1.clientY, t2.clientX - t1.clientX) * (180 / Math.PI);
+      const delta = currentAngle - touchStartAngleRef.current;
+      let newRotation = (touchStartRotationRef.current + delta) % 360;
+      if (newRotation < 0) newRotation += 360;
+      setMapRotation(Math.round(newRotation));
+    }
+  }, [isTouchRotating]);
+
+  const handleTouchEnd = useCallback((e: React.TouchEvent) => {
+    if (e.touches.length < 2 && isTouchRotating) {
+      setIsTouchRotating(false);
+    }
+  }, [isTouchRotating]);
 
   // Community Observations List State
   const [communityObsList, setCommunityObsList] = useState<CommunityObservation[]>(() =>
@@ -1148,6 +1253,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
     inatMarkersLayerRef.current = L.layerGroup().addTo(map);
     indiaMarkersLayerRef.current = L.layerGroup().addTo(map);
     communityMarkersLayerRef.current = L.layerGroup().addTo(map);
+    userPlantsLayerRef.current = L.layerGroup().addTo(map);
     selectedPlantMarkerLayerRef.current = L.layerGroup().addTo(map);
     nurseryMarkersLayerRef.current = L.layerGroup().addTo(map);
     routeLayerRef.current = L.layerGroup().addTo(map);
@@ -1176,6 +1282,10 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
         indiaMarkersLayerRef.current = null;
       }
       communityMarkersLayerRef.current = null;
+      if (userPlantsLayerRef.current) {
+        userPlantsLayerRef.current.clearLayers();
+        userPlantsLayerRef.current = null;
+      }
       if (selectedPlantMarkerLayerRef.current) {
         selectedPlantMarkerLayerRef.current.clearLayers();
         selectedPlantMarkerLayerRef.current = null;
@@ -1500,8 +1610,9 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
     }
 
     if (activeDataSource === 'demo') {
-      // Demo sandbox pins
-      plants.forEach((plant) => {
+      // Demo sandbox pins - only render demo plants here to prevent duplicate markers with user layer
+      const demoPlants = plants.filter((plant) => !isUserSubmittedPlant(plant));
+      demoPlants.forEach((plant) => {
         const isSelected = activeItem?.type === 'plant' && activeItem.plant?.id === plant.id;
         const markerHtml = `
           <div class="relative cursor-pointer flex flex-col items-center justify-center transition-transform hover:scale-110">
@@ -1800,6 +1911,158 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
       markersMapRef.current.set(obs.id, marker);
     });
   }, [communityObsList, activeItem, onSelectCommunityObservation]);
+
+  // Render Firebase / User-Submitted Plant Markers independently of current data source
+  useEffect(() => {
+    const userLayer = userPlantsLayerRef.current;
+    if (!userLayer) return;
+
+    userLayer.clearLayers();
+
+    // Filter for valid user-submitted plants with valid geographic coordinates
+    const userPlants = plants.filter((plant) => {
+      if (!isUserSubmittedPlant(plant)) return false;
+      const coords = getValidPlantCoordinates(plant);
+      return coords !== null;
+    });
+
+    userPlants.forEach((plant) => {
+      const coords = getValidPlantCoordinates(plant);
+      if (!coords) return;
+
+      const isSelected = activeItem?.type === 'plant' && activeItem.plant?.id === plant.id;
+
+      const markerHtml = `
+        <div class="relative cursor-pointer flex flex-col items-center justify-center transition-transform hover:scale-115">
+          <div style="background-color: ${isSelected ? '#0f766e' : '#0d9488'};" class="w-9 h-9 sm:w-10 sm:h-10 rounded-full border-2 border-white shadow-lg flex items-center justify-center text-white ${
+            isSelected ? 'ring-4 ring-teal-300 scale-110 shadow-2xl' : ''
+          }">
+            <span style="font-size: 15px; line-height: 1;">🌱</span>
+          </div>
+          <div style="border-top-color: ${isSelected ? '#0f766e' : '#0d9488'};" class="w-0 h-0 border-x-4 border-x-transparent border-t-[7px] -mt-0.5"></div>
+          <div class="mt-0.5 bg-teal-950/90 text-white font-bold text-[9px] px-1.5 py-0.2 rounded shadow-xs whitespace-nowrap pointer-events-none border border-teal-500/40">
+            User Flora
+          </div>
+        </div>
+      `;
+
+      const customIcon = L.divIcon({
+        className: 'user-plant-pin',
+        html: markerHtml,
+        iconSize: [44, 52],
+        iconAnchor: [22, 42],
+        popupAnchor: [0, -38],
+      });
+
+      const marker = L.marker([coords.lat, coords.lng], {
+        icon: customIcon,
+        title: `User Plant Record: ${plant.commonName || 'Plant'}`,
+      });
+
+      const safeCommonName = escapeHtml(plant.commonName || 'Plant Record');
+      const safeScientificName = plant.scientificName ? escapeHtml(plant.scientificName) : '';
+      const safeFamily = plant.family ? escapeHtml(plant.family) : '';
+      const safeLocation = plant.locationName ? escapeHtml(plant.locationName) : '';
+      const safeUsername = plant.ownerUsername ? escapeHtml(plant.ownerUsername) : '';
+      const safeCategory = plant.category ? escapeHtml(plant.category) : '';
+      const safeNavName = (plant.commonName || 'Plant Record').replace(/'/g, "\\'");
+
+      const popupHtml = `
+        <div style="font-family: inherit; width: 280px;" class="p-3 text-stone-900">
+          <div class="flex items-center justify-between gap-1 mb-2">
+            <span class="text-[10px] uppercase font-bold tracking-wider text-teal-900 bg-teal-50 px-2 py-0.5 rounded border border-teal-200 flex items-center gap-1">
+              <span class="w-1.5 h-1.5 rounded-full bg-teal-600"></span>
+              User Flora Record
+            </span>
+            ${
+              safeUsername
+                ? `<span class="text-[10px] font-mono text-stone-600 font-medium">${safeUsername}</span>`
+                : `<span class="text-[10px] font-mono text-stone-400">#${escapeHtml(plant.id.slice(-6))}</span>`
+            }
+          </div>
+
+          ${
+            plant.imageUrl
+              ? `<div class="mb-2 relative rounded-lg overflow-hidden h-36 bg-stone-100 border border-stone-200">
+                  <img src="${plant.imageUrl}" alt="${safeCommonName}" class="w-full h-full object-cover" />
+                  <span class="absolute bottom-1 right-1 text-[9px] bg-teal-950/80 text-white px-1.5 py-0.5 rounded backdrop-blur-xs">Field Photo</span>
+                </div>`
+              : ''
+          }
+
+          <div class="mb-2">
+            <h4 class="font-serif-display text-base font-bold text-stone-900 leading-tight">
+              ${safeCommonName}
+            </h4>
+            ${
+              safeScientificName
+                ? `<p class="text-xs text-stone-700 italic font-serif">${safeScientificName}</p>`
+                : ''
+            }
+            ${
+              safeFamily
+                ? `<p class="text-[11px] text-stone-500">Family: ${safeFamily}</p>`
+                : ''
+            }
+          </div>
+
+          <div class="space-y-1.5 text-xs text-stone-700 bg-teal-50/50 p-2.5 rounded-lg border border-teal-100 mb-2">
+            ${
+              safeLocation
+                ? `<div><strong>Location:</strong> <span class="text-stone-800">${safeLocation}</span></div>`
+                : ''
+            }
+            <div><strong>Coordinates:</strong> <span class="font-mono text-[11px] text-stone-700">${coords.lat.toFixed(5)}°, ${coords.lng.toFixed(5)}°</span></div>
+            ${
+              coords.accuracy
+                ? `<div class="text-[11px] text-stone-500"><strong>GPS Accuracy:</strong> ±${coords.accuracy}m</div>`
+                : ''
+            }
+            ${
+              safeCategory
+                ? `<div><strong>Category:</strong> ${safeCategory}</div>`
+                : ''
+            }
+            ${
+              plant.treeHeightM
+                ? `<div><strong>Tree Height:</strong> ${plant.treeHeightM} m</div>`
+                : ''
+            }
+            ${
+              plant.trunkCircumferenceCm
+                ? `<div><strong>Circumference:</strong> ${plant.trunkCircumferenceCm} cm</div>`
+                : ''
+            }
+          </div>
+
+          <button
+            type="button"
+            onclick="window.wimpStartNav && window.wimpStartNav(${coords.lat}, ${coords.lng}, '${safeNavName}')"
+            class="w-full py-1.5 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+          >
+            <span>🧭 Start Road Navigation</span>
+          </button>
+        </div>
+      `;
+
+      marker.bindPopup(popupHtml, {
+        closeButton: true,
+        autoPan: true,
+        className: 'botanical-map-popup',
+      });
+
+      marker.on('click', () => {
+        setActiveItem({ type: 'plant', plant });
+      });
+
+      marker.on('popupopen', () => {
+        setActiveItem({ type: 'plant', plant });
+      });
+
+      userLayer.addLayer(marker);
+      markersMapRef.current.set(plant.id, marker);
+    });
+  }, [plants, activeItem]);
 
   // Handle selectedCommunityObservation change (center and open popup)
   useEffect(() => {
@@ -3178,11 +3441,37 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
           <div
             className={
               isMapFullscreen
-                ? 'fixed inset-0 z-[9999] w-screen h-screen m-0 p-0 rounded-none border-none bg-stone-900 overflow-hidden'
-                : 'lg:col-span-8 bg-white rounded-3xl border border-stone-200 overflow-hidden shadow-xs h-[480px] sm:h-[560px] relative'
+                ? 'fixed inset-0 z-[9999] w-screen h-screen m-0 p-0 rounded-none border-none bg-stone-900 overflow-hidden select-none'
+                : 'lg:col-span-8 bg-white rounded-3xl border border-stone-200 overflow-hidden shadow-xs h-[480px] sm:h-[560px] relative select-none'
             }
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            onTouchCancel={handleTouchEnd}
           >
-            <div ref={mapContainerRef} className="w-full h-full z-10" />
+            <div
+              ref={mapContainerRef}
+              style={{
+                transform: `rotate(${mapRotation}deg) scale(${
+                  mapRotation === 0
+                    ? 1
+                    : Math.min(1.42, 1 + Math.abs(Math.sin((mapRotation * Math.PI) / 180)) * 0.42)
+                })`,
+                transformOrigin: '50% 50%',
+                transition: isTouchRotating ? 'none' : 'transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1)',
+              }}
+              className="w-full h-full z-10"
+            />
+
+            {/* Active Touch Rotation Angle Indicator Overlay */}
+            {isTouchRotating && (
+              <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[1000] bg-stone-900/90 backdrop-blur-md text-white px-3.5 py-1.5 rounded-full text-xs font-mono font-bold shadow-xl border border-white/20 pointer-events-none flex items-center gap-2 animate-in fade-in duration-100">
+                <Compass className="w-4 h-4 text-emerald-400 animate-spin" />
+                <span>
+                  Bearing: {((mapRotation % 360 + 360) % 360).toFixed(0)}° {getCardinalDirection(mapRotation)}
+                </span>
+              </div>
+            )}
 
             {/* Fullscreen Floating Header Pill with Done / Collapse Button */}
             {isMapFullscreen && (
@@ -3215,8 +3504,8 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               </div>
             )}
 
-            {/* In-canvas Map / Satellite View Toggle & Fullscreen Expand/Collapse */}
-            <div className="absolute top-3 right-3 z-[1000] pointer-events-auto flex items-center bg-white/95 backdrop-blur-md p-1 rounded-2xl border border-stone-300 shadow-md">
+            {/* In-canvas Map / Satellite View Toggle, Compass / Reset North & Fullscreen */}
+            <div className="absolute top-3 right-3 z-[1000] pointer-events-auto flex items-center bg-white/95 backdrop-blur-md p-1 rounded-2xl border border-stone-300 shadow-md gap-0.5">
               <button
                 type="button"
                 onMouseDown={(e) => e.stopPropagation()}
@@ -3225,7 +3514,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                   e.stopPropagation();
                   handleSwitchMapStyle('map');
                 }}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer select-none ${
+                className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer select-none ${
                   mapStyle === 'map'
                     ? 'bg-emerald-800 text-white shadow-xs'
                     : 'text-stone-700 hover:text-stone-950 hover:bg-stone-100/90'
@@ -3233,7 +3522,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                 title="Switch to standard OpenStreetMap view"
               >
                 <Layers className="w-3.5 h-3.5" />
-                <span>Map</span>
+                <span className="hidden xs:inline">Map</span>
               </button>
               <button
                 type="button"
@@ -3243,7 +3532,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                   e.stopPropagation();
                   handleSwitchMapStyle('satellite');
                 }}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer select-none ${
+                className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer select-none ${
                   mapStyle === 'satellite'
                     ? 'bg-emerald-800 text-white shadow-xs'
                     : 'text-stone-700 hover:text-stone-950 hover:bg-stone-100/90'
@@ -3251,9 +3540,86 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                 title="Switch to Satellite imagery view"
               >
                 <Globe className="w-3.5 h-3.5" />
-                <span>Satellite</span>
+                <span className="hidden xs:inline">Satellite</span>
               </button>
-              <div className="w-px h-4 bg-stone-300 mx-1" />
+
+              <div className="w-px h-4 bg-stone-300 mx-0.5" />
+
+              {/* Reset North Compass Control Button */}
+              <button
+                type="button"
+                onMouseDown={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleResetNorth();
+                }}
+                className={`flex items-center gap-1 px-2 sm:px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer select-none ${
+                  mapRotation !== 0
+                    ? 'bg-amber-500 hover:bg-amber-600 text-stone-950 shadow-xs'
+                    : 'text-stone-700 hover:text-stone-950 hover:bg-stone-100/90'
+                }`}
+                title={
+                  mapRotation !== 0
+                    ? `Reset to North (currently rotated ${((mapRotation % 360 + 360) % 360).toFixed(0)}°)`
+                    : 'Map is oriented North-up. Click or tap to align North.'
+                }
+                aria-label="Reset North"
+              >
+                <div
+                  style={{
+                    transform: `rotate(${-mapRotation}deg)`,
+                    transition: isTouchRotating ? 'none' : 'transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1)',
+                  }}
+                  className="w-3.5 h-3.5 flex items-center justify-center shrink-0"
+                >
+                  <Compass
+                    className={`w-3.5 h-3.5 ${
+                      mapRotation !== 0 ? 'text-stone-950 stroke-[2.5]' : 'text-emerald-700'
+                    }`}
+                  />
+                </div>
+                <span className="font-mono text-[11px]">
+                  {mapRotation === 0
+                    ? 'North'
+                    : `${((mapRotation % 360 + 360) % 360).toFixed(0)}°`}
+                </span>
+              </button>
+
+              {/* Quick Rotate Left (-45°) */}
+              <button
+                type="button"
+                onMouseDown={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleRotateBy(-45);
+                }}
+                className="w-7 h-7 flex items-center justify-center rounded-lg text-stone-600 hover:text-stone-950 hover:bg-stone-100/90 transition-colors cursor-pointer"
+                title="Rotate 45° Counter-Clockwise (Left)"
+                aria-label="Rotate Left"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+              </button>
+
+              {/* Quick Rotate Right (+45°) */}
+              <button
+                type="button"
+                onMouseDown={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleRotateBy(45);
+                }}
+                className="w-7 h-7 flex items-center justify-center rounded-lg text-stone-600 hover:text-stone-950 hover:bg-stone-100/90 transition-colors cursor-pointer"
+                title="Rotate 45° Clockwise (Right)"
+                aria-label="Rotate Right"
+              >
+                <RotateCw className="w-3.5 h-3.5" />
+              </button>
+
+              <div className="w-px h-4 bg-stone-300 mx-0.5" />
+
               <button
                 type="button"
                 onMouseDown={(e) => e.stopPropagation()}
@@ -3262,7 +3628,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                   e.stopPropagation();
                   setIsMapFullscreen((prev) => !prev);
                 }}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer select-none ${
+                className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer select-none ${
                   isMapFullscreen
                     ? 'bg-emerald-800 text-white shadow-xs'
                     : 'text-stone-700 hover:text-stone-950 hover:bg-stone-100/90'
@@ -3275,7 +3641,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                 ) : (
                   <Maximize2 className="w-3.5 h-3.5 text-current" />
                 )}
-                <span>{isMapFullscreen ? 'Collapse' : 'Expand'}</span>
+                <span className="hidden sm:inline">{isMapFullscreen ? 'Collapse' : 'Expand'}</span>
               </button>
             </div>
 
