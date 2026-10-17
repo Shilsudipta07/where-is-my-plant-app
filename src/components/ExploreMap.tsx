@@ -391,11 +391,19 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
   // Radius options (Requirement 3: 1 km, 5 km, 10 km, 25 km, 50 km; starts with 10 km)
   const [radiusKm, setRadiusKm] = useState<RadiusKmOption>(10);
 
-  // Interactive Map Rotation & Reset North State
+  // Interactive Map Rotation & Reset North State (Enabled ONLY during active road navigation)
   const [mapRotation, setMapRotation] = useState<number>(0);
   const [isTouchRotating, setIsTouchRotating] = useState<boolean>(false);
   const touchStartAngleRef = useRef<number>(0);
   const touchStartRotationRef = useRef<number>(0);
+
+  // Automatically reset map to North-up (0°) whenever navigation is stopped, cleared, or finished
+  useEffect(() => {
+    if (!activeRoute) {
+      setMapRotation(0);
+      setIsTouchRotating(false);
+    }
+  }, [activeRoute]);
 
   const handleResetNorth = useCallback(() => {
     setIsTouchRotating(false);
@@ -403,15 +411,20 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
   }, []);
 
   const handleRotateBy = useCallback((deltaDeg: number) => {
+    // Only allow rotation while road navigation is actively running
+    if (!activeRoute) return;
     setIsTouchRotating(false);
     setMapRotation((prev) => {
       let next = (prev + deltaDeg) % 360;
       if (next < 0) next += 360;
       return next;
     });
-  }, []);
+  }, [activeRoute]);
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    // Only allow two-finger rotation gesture while road navigation is actively running
+    if (!activeRoute) return;
+
     if (e.touches.length === 2) {
       const t1 = e.touches[0];
       const t2 = e.touches[1];
@@ -420,9 +433,13 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
       touchStartRotationRef.current = mapRotation;
       setIsTouchRotating(true);
     }
-  }, [mapRotation]);
+  }, [activeRoute, mapRotation]);
 
   const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    if (!activeRoute) {
+      if (isTouchRotating) setIsTouchRotating(false);
+      return;
+    }
     if (isTouchRotating && e.touches.length === 2) {
       const t1 = e.touches[0];
       const t2 = e.touches[1];
@@ -432,13 +449,42 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
       if (newRotation < 0) newRotation += 360;
       setMapRotation(Math.round(newRotation));
     }
-  }, [isTouchRotating]);
+  }, [activeRoute, isTouchRotating]);
 
   const handleTouchEnd = useCallback((e: React.TouchEvent) => {
     if (e.touches.length < 2 && isTouchRotating) {
       setIsTouchRotating(false);
     }
   }, [isTouchRotating]);
+
+  // Track window/orientation resize so aspect ratio dynamically recalculates
+  const [, setViewportTick] = useState<number>(0);
+  useEffect(() => {
+    const handleResize = () => setViewportTick((t) => (t + 1) % 1000);
+    window.addEventListener('resize', handleResize);
+    window.addEventListener('orientationchange', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('orientationchange', handleResize);
+    };
+  }, []);
+
+  // Compute exact geometric scale factor to guarantee the rotated Leaflet canvas
+  // completely circumscribes and covers the rectangular viewport with zero black triangular corners
+  const getRotationScale = useCallback((deg: number): number => {
+    if (!activeRoute || deg === 0) return 1;
+    const parent = mapContainerRef.current?.parentElement;
+    const w = parent?.clientWidth || (typeof window !== 'undefined' ? window.innerWidth : 360);
+    const h = parent?.clientHeight || (typeof window !== 'undefined' ? (isMapFullscreen ? window.innerHeight : 480) : 480);
+    const aspect = Math.max(w / Math.max(h, 1), h / Math.max(w, 1));
+    const rad = (deg * Math.PI) / 180;
+    const absCos = Math.abs(Math.cos(rad));
+    const absSin = Math.abs(Math.sin(rad));
+    // Exact mathematical formula for a rotated rectangle to circumscribe the viewport:
+    const requiredScale = absCos + aspect * absSin;
+    // 2.5% anti-aliasing buffer to prevent subpixel hairline rounding artifacts
+    return Math.max(1, requiredScale * 1.025);
+  }, [activeRoute, isMapFullscreen]);
 
   // Community Observations List State
   const [communityObsList, setCommunityObsList] = useState<CommunityObservation[]>(() =>
@@ -2598,6 +2644,9 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
   ) => {
     setRouteError(null);
     isNavigatingRef.current = true;
+    // Navigation session begins strictly North-up (0°) with rotation active for the session
+    setMapRotation(0);
+    setIsTouchRotating(false);
 
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
       setRouteError('GPS geolocation is not supported by your browser.');
@@ -2651,6 +2700,9 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
     isNavigatingRef.current = false;
     setRouteError(null);
     setIsReroutingUI(false);
+    // Immediately reset map to North-up (0°) and disable active rotation
+    setMapRotation(0);
+    setIsTouchRotating(false);
     if (routeLayerRef.current) {
       routeLayerRef.current.clearLayers();
     }
@@ -3441,8 +3493,12 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
           <div
             className={
               isMapFullscreen
-                ? 'fixed inset-0 z-[9999] w-screen h-screen m-0 p-0 rounded-none border-none bg-stone-900 overflow-hidden select-none'
-                : 'lg:col-span-8 bg-white rounded-3xl border border-stone-200 overflow-hidden shadow-xs h-[480px] sm:h-[560px] relative select-none'
+                ? `fixed inset-0 z-[9999] w-screen h-screen m-0 p-0 rounded-none border-none ${
+                    mapStyle === 'satellite' ? 'bg-stone-900' : 'bg-stone-100'
+                  } overflow-hidden select-none`
+                : `lg:col-span-8 ${
+                    mapStyle === 'satellite' ? 'bg-stone-900' : 'bg-stone-100'
+                  } rounded-3xl border border-stone-200 overflow-hidden shadow-xs h-[480px] sm:h-[560px] relative select-none`
             }
             onTouchStart={handleTouchStart}
             onTouchMove={handleTouchMove}
@@ -3452,10 +3508,8 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
             <div
               ref={mapContainerRef}
               style={{
-                transform: `rotate(${mapRotation}deg) scale(${
-                  mapRotation === 0
-                    ? 1
-                    : Math.min(1.42, 1 + Math.abs(Math.sin((mapRotation * Math.PI) / 180)) * 0.42)
+                transform: `rotate(${activeRoute ? mapRotation : 0}deg) scale(${
+                  activeRoute && mapRotation !== 0 ? getRotationScale(mapRotation) : 1
                 })`,
                 transformOrigin: '50% 50%',
                 transition: isTouchRotating ? 'none' : 'transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1)',
@@ -3463,8 +3517,8 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               className="w-full h-full z-10"
             />
 
-            {/* Active Touch Rotation Angle Indicator Overlay */}
-            {isTouchRotating && (
+            {/* Active Touch Rotation Angle Indicator Overlay (Active Navigation Sessions ONLY) */}
+            {isTouchRotating && Boolean(activeRoute) && (
               <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[1000] bg-stone-900/90 backdrop-blur-md text-white px-3.5 py-1.5 rounded-full text-xs font-mono font-bold shadow-xl border border-white/20 pointer-events-none flex items-center gap-2 animate-in fade-in duration-100">
                 <Compass className="w-4 h-4 text-emerald-400 animate-spin" />
                 <span>
@@ -3543,80 +3597,85 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                 <span className="hidden xs:inline">Satellite</span>
               </button>
 
-              <div className="w-px h-4 bg-stone-300 mx-0.5" />
+              {/* Interactive Rotation & Reset North Controls (Visible ONLY during active road navigation) */}
+              {Boolean(activeRoute) && (
+                <>
+                  <div className="w-px h-4 bg-stone-300 mx-0.5" />
 
-              {/* Reset North Compass Control Button */}
-              <button
-                type="button"
-                onMouseDown={(e) => e.stopPropagation()}
-                onTouchStart={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleResetNorth();
-                }}
-                className={`flex items-center gap-1 px-2 sm:px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer select-none ${
-                  mapRotation !== 0
-                    ? 'bg-amber-500 hover:bg-amber-600 text-stone-950 shadow-xs'
-                    : 'text-stone-700 hover:text-stone-950 hover:bg-stone-100/90'
-                }`}
-                title={
-                  mapRotation !== 0
-                    ? `Reset to North (currently rotated ${((mapRotation % 360 + 360) % 360).toFixed(0)}°)`
-                    : 'Map is oriented North-up. Click or tap to align North.'
-                }
-                aria-label="Reset North"
-              >
-                <div
-                  style={{
-                    transform: `rotate(${-mapRotation}deg)`,
-                    transition: isTouchRotating ? 'none' : 'transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1)',
-                  }}
-                  className="w-3.5 h-3.5 flex items-center justify-center shrink-0"
-                >
-                  <Compass
-                    className={`w-3.5 h-3.5 ${
-                      mapRotation !== 0 ? 'text-stone-950 stroke-[2.5]' : 'text-emerald-700'
+                  {/* Reset North Compass Control Button */}
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onTouchStart={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleResetNorth();
+                    }}
+                    className={`flex items-center gap-1 px-2 sm:px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer select-none ${
+                      mapRotation !== 0
+                        ? 'bg-amber-500 hover:bg-amber-600 text-stone-950 shadow-xs'
+                        : 'text-stone-700 hover:text-stone-950 hover:bg-stone-100/90'
                     }`}
-                  />
-                </div>
-                <span className="font-mono text-[11px]">
-                  {mapRotation === 0
-                    ? 'North'
-                    : `${((mapRotation % 360 + 360) % 360).toFixed(0)}°`}
-                </span>
-              </button>
+                    title={
+                      mapRotation !== 0
+                        ? `Reset to North (currently rotated ${((mapRotation % 360 + 360) % 360).toFixed(0)}°)`
+                        : 'Map is oriented North-up. Click or tap to align North.'
+                    }
+                    aria-label="Reset North"
+                  >
+                    <div
+                      style={{
+                        transform: `rotate(${-mapRotation}deg)`,
+                        transition: isTouchRotating ? 'none' : 'transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1)',
+                      }}
+                      className="w-3.5 h-3.5 flex items-center justify-center shrink-0"
+                    >
+                      <Compass
+                        className={`w-3.5 h-3.5 ${
+                          mapRotation !== 0 ? 'text-stone-950 stroke-[2.5]' : 'text-emerald-700'
+                        }`}
+                      />
+                    </div>
+                    <span className="font-mono text-[11px]">
+                      {mapRotation === 0
+                        ? 'North'
+                        : `${((mapRotation % 360 + 360) % 360).toFixed(0)}°`}
+                    </span>
+                  </button>
 
-              {/* Quick Rotate Left (-45°) */}
-              <button
-                type="button"
-                onMouseDown={(e) => e.stopPropagation()}
-                onTouchStart={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleRotateBy(-45);
-                }}
-                className="w-7 h-7 flex items-center justify-center rounded-lg text-stone-600 hover:text-stone-950 hover:bg-stone-100/90 transition-colors cursor-pointer"
-                title="Rotate 45° Counter-Clockwise (Left)"
-                aria-label="Rotate Left"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-              </button>
+                  {/* Quick Rotate Left (-45°) */}
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onTouchStart={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRotateBy(-45);
+                    }}
+                    className="w-7 h-7 flex items-center justify-center rounded-lg text-stone-600 hover:text-stone-950 hover:bg-stone-100/90 transition-colors cursor-pointer"
+                    title="Rotate 45° Counter-Clockwise (Left)"
+                    aria-label="Rotate Left"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                  </button>
 
-              {/* Quick Rotate Right (+45°) */}
-              <button
-                type="button"
-                onMouseDown={(e) => e.stopPropagation()}
-                onTouchStart={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleRotateBy(45);
-                }}
-                className="w-7 h-7 flex items-center justify-center rounded-lg text-stone-600 hover:text-stone-950 hover:bg-stone-100/90 transition-colors cursor-pointer"
-                title="Rotate 45° Clockwise (Right)"
-                aria-label="Rotate Right"
-              >
-                <RotateCw className="w-3.5 h-3.5" />
-              </button>
+                  {/* Quick Rotate Right (+45°) */}
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onTouchStart={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRotateBy(45);
+                    }}
+                    className="w-7 h-7 flex items-center justify-center rounded-lg text-stone-600 hover:text-stone-950 hover:bg-stone-100/90 transition-colors cursor-pointer"
+                    title="Rotate 45° Clockwise (Right)"
+                    aria-label="Rotate Right"
+                  >
+                    <RotateCw className="w-3.5 h-3.5" />
+                  </button>
+                </>
+              )}
 
               <div className="w-px h-4 bg-stone-300 mx-0.5" />
 
@@ -3675,6 +3734,21 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
                   </div>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
+                  {mapRotation !== 0 && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleResetNorth();
+                      }}
+                      className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-amber-400 hover:bg-amber-300 active:scale-95 text-stone-950 rounded text-[9px] sm:text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1 shadow-2xs"
+                      title="Reset map orientation to North (0°)"
+                      aria-label="Reset North"
+                    >
+                      <Compass className="w-3 h-3 text-stone-950" />
+                      <span>North</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={(e) => {

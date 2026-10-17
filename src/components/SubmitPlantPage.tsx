@@ -28,6 +28,7 @@ import {
   X,
   Maximize2,
   Minimize2,
+  RotateCcw,
 } from 'lucide-react';
 import lavenderImg from '../assets/images/plant_lavender_wildflower_1790167109212.jpg';
 import { DEMO_CAMPUS_CENTER } from '../data/samplePlants';
@@ -108,6 +109,8 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
   const [isLocatingGps, setIsLocatingGps] = useState(false);
   const [gpsSuccess, setGpsSuccess] = useState(Boolean(userLocation));
   const [gpsError, setGpsError] = useState<string | null>(null);
+  const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(userLocation?.accuracy || null);
+  const [gpsTimestamp, setGpsTimestamp] = useState<Date | null>(userLocation ? new Date() : null);
 
   // Place Search State (OpenStreetMap Nominatim search)
   const [placeQuery, setPlaceQuery] = useState<string>('');
@@ -342,6 +345,8 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
         setLocationSource('map');
         setGpsSuccess(false);
         setGpsError(null);
+        setGpsAccuracy(null);
+        setGpsTimestamp(null);
       });
 
       // Synchronize coordinates when clicking on map
@@ -353,6 +358,8 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
         setLocationSource('map');
         setGpsSuccess(false);
         setGpsError(null);
+        setGpsAccuracy(null);
+        setGpsTimestamp(null);
       });
 
       mapInstanceRef.current = map;
@@ -378,48 +385,91 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
 
   // Handler: Use My Current Location via browser Geolocation API
   const handleUseCurrentLocation = () => {
-    if (!navigator.geolocation) {
-      setGpsError('Geolocation is not supported by your browser.');
+    // Check secure context first (browsers block geolocation on non-secure origins)
+    if (typeof window !== 'undefined' && window.isSecureContext === false) {
+      setGpsError(
+        'GPS geolocation requires a secure connection (HTTPS). Please choose your plant location on the interactive map below or enter coordinates manually.'
+      );
+      setGpsSuccess(false);
+      setGpsAccuracy(null);
+      return;
+    }
+
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setGpsError('Geolocation is not supported by your browser. Please select on the map or type coordinates manually.');
+      setGpsSuccess(false);
+      setGpsAccuracy(null);
       return;
     }
 
     setIsLocatingGps(true);
     setGpsError(null);
     setGpsSuccess(false);
+    setGpsAccuracy(null);
+    setGpsTimestamp(null);
 
     navigator.geolocation.getCurrentPosition(
       (pos) => {
+        setIsLocatingGps(false);
         const lat = pos.coords.latitude;
         const lng = pos.coords.longitude;
+        const rawAccuracy = pos.coords.accuracy;
+        const accuracy =
+          typeof rawAccuracy === 'number' && !isNaN(rawAccuracy) && rawAccuracy >= 0
+            ? Math.round(rawAccuracy)
+            : null;
+
+        // Coordinate sanity check (reject NaN, impossible ranges, or (0,0))
+        if (
+          typeof lat !== 'number' ||
+          isNaN(lat) ||
+          lat < -90 ||
+          lat > 90 ||
+          typeof lng !== 'number' ||
+          isNaN(lng) ||
+          lng < -180 ||
+          lng > 180 ||
+          (lat === 0 && lng === 0)
+        ) {
+          setGpsError('Device returned invalid geographic coordinates. Please retry outdoors or select on the map.');
+          setGpsSuccess(false);
+          setGpsAccuracy(null);
+          return;
+        }
+
+        // Apply new fresh coordinates and accuracy
         setLatInput(lat.toFixed(6));
         setLngInput(lng.toFixed(6));
         setLocationSource('gps');
+        setGpsAccuracy(accuracy);
+        setGpsTimestamp(new Date());
         setGpsSuccess(true);
-        setIsLocatingGps(false);
 
         if (mapInstanceRef.current && markerRef.current) {
           markerRef.current.setLatLng([lat, lng]);
-          mapInstanceRef.current.setView([lat, lng], 16, { animate: true });
+          mapInstanceRef.current.setView([lat, lng], 17, { animate: true });
         }
       },
       (err) => {
         setIsLocatingGps(false);
         setGpsSuccess(false);
+        setGpsAccuracy(null);
+        setGpsTimestamp(null);
         console.warn('[SubmitPlantPage] Geolocation error:', err);
-        if (err.code === 1) {
-          setGpsError('Location permission was denied. You can still pick your plant position on the interactive map below or enter coordinates manually.');
-        } else if (err.code === 2) {
-          setGpsError('GPS signal unavailable. You can click on the map below or type coordinates manually.');
-        } else if (err.code === 3) {
-          setGpsError('GPS request timed out. You can click on the map below or type coordinates manually.');
+        if (err.code === 1) { // PERMISSION_DENIED
+          setGpsError('Location permission was denied. Please allow location access in your browser or device settings, or select your location on the map below.');
+        } else if (err.code === 2) { // POSITION_UNAVAILABLE
+          setGpsError('GPS position unavailable. Please ensure your device GPS/Location service is enabled, or pick your location on the map below.');
+        } else if (err.code === 3) { // TIMEOUT
+          setGpsError('GPS request timed out waiting for satellite fix. Move outdoors with a clear view of the sky and tap Retry, or pick on the map below.');
         } else {
-          setGpsError('Unable to retrieve your location. Please select on the map or enter coordinates manually.');
+          setGpsError('Unable to detect GPS position. You can choose your plant location on the interactive map below or enter coordinates manually.');
         }
       },
       {
         enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 60000,
+        timeout: 15000, // 15 seconds to allow GPS hardware to lock satellites
+        maximumAge: 0,   // Force fresh satellite fix; do NOT accept stale cached position
       }
     );
   };
@@ -429,6 +479,8 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
     setLatInput(newVal);
     setLocationSource('manual');
     setGpsSuccess(false);
+    setGpsAccuracy(null);
+    setGpsTimestamp(null);
     const parsedLat = parseFloat(newVal);
     const parsedLng = parseFloat(lngInput);
     if (
@@ -451,6 +503,8 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
     setLngInput(newVal);
     setLocationSource('manual');
     setGpsSuccess(false);
+    setGpsAccuracy(null);
+    setGpsTimestamp(null);
     const parsedLat = parseFloat(latInput);
     const parsedLng = parseFloat(newVal);
     if (
@@ -543,6 +597,8 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
     setLocationSource('map');
     setGpsSuccess(false);
     setGpsError(null);
+    setGpsAccuracy(null);
+    setGpsTimestamp(null);
     setPlaceResults([]);
     setHasSearchedPlaces(false);
     setPlaceQuery('');
@@ -565,6 +621,8 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
     setLocationSource('manual');
     setGpsSuccess(false);
     setGpsError(null);
+    setGpsAccuracy(null);
+    setGpsTimestamp(null);
     setPreviewImage(lavenderImg);
     setHasCustomPhoto(false);
     setPhotoError(null);
@@ -684,6 +742,7 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
         coordinates: {
           lat: parsedLat,
           lng: parsedLng,
+          accuracy: locationSource === 'gps' && gpsAccuracy !== null ? gpsAccuracy : undefined,
         },
         locationSource,
         demoLocationDescription: `Observation recorded at ${cleanLocationName}`,
@@ -1202,21 +1261,96 @@ export const SubmitPlantPage: React.FC<SubmitPlantPageProps> = ({
                   </button>
                 </div>
 
-                {/* GPS Success Banner */}
-                {gpsSuccess && (
-                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 flex items-center gap-2 animate-in fade-in duration-150">
-                    <CheckCircle className="w-4 h-4 text-emerald-700 shrink-0" />
-                    <span>GPS coordinates acquired! Map pin and coordinates updated.</span>
+                {/* GPS Acquired Banner with Accuracy & Retry */}
+                {gpsSuccess && locationSource === 'gps' && (
+                  <div
+                    className={`p-3.5 rounded-2xl border text-xs animate-in fade-in duration-150 ${
+                      gpsAccuracy !== null && gpsAccuracy <= 25
+                        ? 'bg-emerald-50/90 border-emerald-300 text-emerald-950'
+                        : gpsAccuracy !== null && gpsAccuracy <= 100
+                        ? 'bg-blue-50/90 border-blue-300 text-blue-950'
+                        : 'bg-amber-50/90 border-amber-300 text-amber-950'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-start gap-2.5">
+                        {gpsAccuracy !== null && gpsAccuracy <= 25 ? (
+                          <CheckCircle className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                        ) : gpsAccuracy !== null && gpsAccuracy <= 100 ? (
+                          <Navigation className="w-4 h-4 text-blue-700 shrink-0 mt-0.5" />
+                        ) : (
+                          <AlertCircle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                        )}
+                        <div className="space-y-1">
+                          <div className="font-bold flex items-center flex-wrap gap-2">
+                            <span>
+                              {gpsAccuracy !== null && gpsAccuracy <= 25
+                                ? 'High-Precision GPS Location Acquired'
+                                : gpsAccuracy !== null && gpsAccuracy <= 100
+                                ? 'Moderate-Accuracy GPS Location Acquired'
+                                : 'Approximate GPS Signal Detected'}
+                            </span>
+                            {gpsAccuracy !== null && (
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${
+                                  gpsAccuracy <= 25
+                                    ? 'bg-emerald-200 text-emerald-900'
+                                    : gpsAccuracy <= 100
+                                    ? 'bg-blue-200 text-blue-900'
+                                    : 'bg-amber-200 text-amber-900'
+                                }`}
+                              >
+                                ±{gpsAccuracy} m accuracy
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] font-mono text-stone-700">
+                            Latitude: <span className="font-bold text-stone-900">{latInput}</span>, Longitude:{' '}
+                            <span className="font-bold text-stone-900">{lngInput}</span>
+                          </div>
+                          <p className="text-[11px] text-stone-600 leading-relaxed">
+                            {gpsAccuracy !== null && gpsAccuracy <= 25
+                              ? 'Strong satellite signal. Map pin and coordinates have been updated to your field position.'
+                              : gpsAccuracy !== null && gpsAccuracy <= 100
+                              ? 'Acceptable field reading. Map pin updated. You can fine-tune the pin on the map below if needed.'
+                              : 'Satellite signal is weak or estimated via cellular/Wi-Fi towers (poor accuracy). Move outdoors with open sky and tap Retry GPS, or drag the map pin below to pinpoint the exact plant.'}
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleUseCurrentLocation}
+                        disabled={isLocatingGps || isSubmitting}
+                        className="px-2.5 py-1 bg-white hover:bg-stone-50 border border-stone-300 rounded-lg text-[11px] font-semibold text-stone-800 transition-colors flex items-center gap-1 shrink-0 cursor-pointer shadow-2xs"
+                        title="Take a fresh GPS reading"
+                      >
+                        <RotateCcw className={`w-3 h-3 text-stone-600 ${isLocatingGps ? 'animate-spin' : ''}`} />
+                        <span>Retry GPS</span>
+                      </button>
+                    </div>
                   </div>
                 )}
 
-                {/* GPS Error Banner (Non-blocking) */}
+                {/* GPS Error Banner (Non-blocking with Retry option) */}
                 {gpsError && (
-                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-start gap-2 animate-in fade-in duration-150">
-                    <AlertCircle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
-                    <div className="flex-1 leading-relaxed">
-                      <span>{gpsError}</span>
+                  <div className="p-3.5 bg-rose-50/90 border border-rose-200 rounded-2xl text-xs text-rose-950 flex items-start justify-between gap-3 animate-in fade-in duration-150">
+                    <div className="flex items-start gap-2.5">
+                      <AlertCircle className="w-4 h-4 text-rose-700 shrink-0 mt-0.5" />
+                      <div className="space-y-1">
+                        <div className="font-bold text-rose-900">GPS Location Notice</div>
+                        <p className="text-[11px] text-rose-800 leading-relaxed">{gpsError}</p>
+                      </div>
                     </div>
+                    <button
+                      type="button"
+                      onClick={handleUseCurrentLocation}
+                      disabled={isLocatingGps || isSubmitting}
+                      className="px-2.5 py-1 bg-white hover:bg-stone-50 border border-rose-300 rounded-lg text-[11px] font-semibold text-rose-950 transition-colors flex items-center gap-1 shrink-0 cursor-pointer shadow-2xs"
+                    >
+                      <RotateCcw className={`w-3 h-3 text-rose-700 ${isLocatingGps ? 'animate-spin' : ''}`} />
+                      <span>Retry</span>
+                    </button>
                   </div>
                 )}
 
