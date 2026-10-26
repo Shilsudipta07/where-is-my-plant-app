@@ -13,7 +13,7 @@ import {
 import { getStoredCommunityObservations, initCommunityObservationsSync } from '../services/observationStorage';
 import { PlantNursery, fetchNearbyPlantNurseries } from '../services/nurseryService';
 import { PlantOccurrenceRecord, fetchGbifIndiaOccurrences, IndiaSourceFilter } from '../services/gbifService';
-import { calculateDistanceKm, formatDistance } from '../utils/geoUtils';
+import { calculateDistanceKm, formatDistance, calculateBearing } from '../utils/geoUtils';
 import {
   MapPin,
   Navigation,
@@ -295,6 +295,8 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
     coordinates: [number, number][];
     originalDistanceMeters?: number;
     originalDurationSeconds?: number;
+    routeType?: 'walking' | 'direct-sightline';
+    bearing?: { degrees: number; cardinal: string };
   } | null>(null);
   const [isCalculatingRoute, setIsCalculatingRoute] = useState<boolean>(false);
   const [routeError, setRouteError] = useState<string | null>(null);
@@ -490,6 +492,8 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
   const [communityObsList, setCommunityObsList] = useState<CommunityObservation[]>(() =>
     propCommunityObservations || getStoredCommunityObservations()
   );
+  const communityObsListRef = useRef(communityObsList);
+  communityObsListRef.current = communityObsList;
 
   useEffect(() => {
     if (propCommunityObservations) {
@@ -947,74 +951,120 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               // Live Navigation Tracking: ETA/distance calculation & off-route auto-rerouting
               if (activeRouteRef.current && activeRouteRef.current.coordinates.length > 1) {
                 const currentRoute = activeRouteRef.current;
-                const { minDistance, closestSegmentIndex } = getMinDistanceToRoute(
-                  latitude,
-                  longitude,
-                  currentRoute.coordinates
-                );
 
-                // Detect if user has moved significantly off-route (> 55 meters from the road path)
-                const isOffRoute = minDistance > 55;
-                const now = Date.now();
-
-                if (
-                  isOffRoute &&
-                  !isReroutingRef.current &&
-                  now - lastRerouteTimeRef.current > 5000 &&
-                  fetchAndDrawRouteRef.current
-                ) {
-                  lastRerouteTimeRef.current = now;
-                  isReroutingRef.current = true;
-                  setIsReroutingUI(true);
-
-                  fetchAndDrawRouteRef.current(
+                if (currentRoute.routeType === 'direct-sightline') {
+                  // Direct sightline guide: update straight-line distance, bearing, and line geometry from current GPS
+                  const remainingMeters = Math.round(
+                    getHaversineDistanceMeters(
+                      latitude,
+                      longitude,
+                      currentRoute.destinationCoords.lat,
+                      currentRoute.destinationCoords.lng
+                    )
+                  );
+                  const updatedBearing = calculateBearing(
                     { lat: latitude, lng: longitude },
-                    currentRoute.destinationCoords,
-                    currentRoute.destinationName,
-                    true
-                  ).finally(() => {
-                    isReroutingRef.current = false;
-                    setIsReroutingUI(false);
-                  });
-                } else if (!isOffRoute) {
-                  // User is on route: calculate updated remaining distance and duration along road
-                  let remainingMeters = getHaversineDistanceMeters(
-                    latitude,
-                    longitude,
-                    currentRoute.coordinates[closestSegmentIndex + 1][0],
-                    currentRoute.coordinates[closestSegmentIndex + 1][1]
+                    currentRoute.destinationCoords
                   );
-                  for (let i = closestSegmentIndex + 1; i < currentRoute.coordinates.length - 1; i++) {
-                    remainingMeters += getHaversineDistanceMeters(
-                      currentRoute.coordinates[i][0],
-                      currentRoute.coordinates[i][1],
-                      currentRoute.coordinates[i + 1][0],
-                      currentRoute.coordinates[i + 1][1]
-                    );
+                  // Standard pedestrian walking speed ~1.25 m/s (~4.5 km/h)
+                  const remainingDurationSeconds = Math.max(0, Math.round(remainingMeters / 1.25));
+
+                  const updatedCoords: [number, number][] = [
+                    [latitude, longitude],
+                    [currentRoute.destinationCoords.lat, currentRoute.destinationCoords.lng],
+                  ];
+
+                  if (routeLayerRef.current) {
+                    routeLayerRef.current.eachLayer((layer) => {
+                      if (layer instanceof L.Polyline) {
+                        layer.setLatLngs(updatedCoords);
+                      }
+                    });
                   }
-
-                  const avgSpeedMps =
-                    currentRoute.originalDistanceMeters &&
-                    currentRoute.originalDurationSeconds &&
-                    currentRoute.originalDurationSeconds > 0
-                      ? currentRoute.originalDistanceMeters / currentRoute.originalDurationSeconds
-                      : 8.5; // fallback ~30 km/h
-
-                  const remainingDurationSeconds = Math.max(
-                    0,
-                    Math.round(remainingMeters / Math.max(avgSpeedMps, 1))
-                  );
 
                   setActiveRoute((prev) => {
                     if (!prev) return null;
                     const updated = {
                       ...prev,
-                      distanceMeters: Math.round(remainingMeters),
+                      distanceMeters: remainingMeters,
                       durationSeconds: remainingDurationSeconds,
+                      coordinates: updatedCoords,
+                      bearing: updatedBearing,
                     };
                     activeRouteRef.current = updated;
                     return updated;
                   });
+                } else {
+                  // Mapped walking path tracking
+                  const { minDistance, closestSegmentIndex } = getMinDistanceToRoute(
+                    latitude,
+                    longitude,
+                    currentRoute.coordinates
+                  );
+
+                  // Detect if user has moved significantly off-route (> 45 meters from the walking path)
+                  const isOffRoute = minDistance > 45;
+                  const now = Date.now();
+
+                  if (
+                    isOffRoute &&
+                    !isReroutingRef.current &&
+                    now - lastRerouteTimeRef.current > 5000 &&
+                    fetchAndDrawRouteRef.current
+                  ) {
+                    lastRerouteTimeRef.current = now;
+                    isReroutingRef.current = true;
+                    setIsReroutingUI(true);
+
+                    fetchAndDrawRouteRef.current(
+                      { lat: latitude, lng: longitude },
+                      currentRoute.destinationCoords,
+                      currentRoute.destinationName,
+                      true
+                    ).finally(() => {
+                      isReroutingRef.current = false;
+                      setIsReroutingUI(false);
+                    });
+                  } else if (!isOffRoute) {
+                    // User is on route: calculate updated remaining distance and duration along path
+                    let remainingMeters = getHaversineDistanceMeters(
+                      latitude,
+                      longitude,
+                      currentRoute.coordinates[closestSegmentIndex + 1][0],
+                      currentRoute.coordinates[closestSegmentIndex + 1][1]
+                    );
+                    for (let i = closestSegmentIndex + 1; i < currentRoute.coordinates.length - 1; i++) {
+                      remainingMeters += getHaversineDistanceMeters(
+                        currentRoute.coordinates[i][0],
+                        currentRoute.coordinates[i][1],
+                        currentRoute.coordinates[i + 1][0],
+                        currentRoute.coordinates[i + 1][1]
+                      );
+                    }
+
+                    const avgSpeedMps =
+                      currentRoute.originalDistanceMeters &&
+                      currentRoute.originalDurationSeconds &&
+                      currentRoute.originalDurationSeconds > 0
+                        ? currentRoute.originalDistanceMeters / currentRoute.originalDurationSeconds
+                        : 1.25; // standard walking speed (~4.5 km/h)
+
+                    const remainingDurationSeconds = Math.max(
+                      0,
+                      Math.round(remainingMeters / Math.max(avgSpeedMps, 1))
+                    );
+
+                    setActiveRoute((prev) => {
+                      if (!prev) return null;
+                      const updated = {
+                        ...prev,
+                        distanceMeters: Math.round(remainingMeters),
+                        durationSeconds: remainingDurationSeconds,
+                      };
+                      activeRouteRef.current = updated;
+                      return updated;
+                    });
+                  }
                 }
               }
             }
@@ -1847,8 +1897,48 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
 
     communityGroup.clearLayers();
 
+    // Detect co-located community observations within ~10 meters
+    const commClusterMap = new Map<string, CommunityObservation[]>();
+    communityObsList.forEach((o1) => {
+      const coLocated = communityObsList.filter((o2) => {
+        return getHaversineDistanceMeters(o1.coordinates.lat, o1.coordinates.lng, o2.coordinates.lat, o2.coordinates.lng) <= 10;
+      });
+      commClusterMap.set(o1.id, coLocated);
+    });
+
     communityObsList.forEach((obs) => {
       const isSelected = activeItem?.type === 'community' && activeItem.community?.id === obs.id;
+      const coLocated = commClusterMap.get(obs.id) || [obs];
+      const clusterCount = coLocated.length;
+      const clusterIndex = coLocated.findIndex((o) => o.id === obs.id);
+
+      let anchorX = 22;
+      let anchorY = 42;
+      let popupOffsetX = 0;
+      let popupOffsetY = -38;
+
+      if (clusterCount === 2) {
+        const shiftX = clusterIndex === 0 ? -15 : 15;
+        anchorX = 22 - shiftX;
+        popupOffsetX = shiftX;
+      } else if (clusterCount > 2) {
+        const angle = (clusterIndex / clusterCount) * 2 * Math.PI;
+        const shiftX = Math.round(16 * Math.sin(angle));
+        const shiftY = Math.round(10 * Math.cos(angle));
+        anchorX = 22 - shiftX;
+        anchorY = 42 - shiftY;
+        popupOffsetX = shiftX;
+        popupOffsetY = -38 + shiftY;
+      }
+
+      const badgeHtml = clusterCount > 1
+        ? `<div class="mt-0.5 bg-purple-950 text-white font-bold text-[9px] px-1.5 py-0.2 rounded shadow-xs whitespace-nowrap pointer-events-none border border-purple-400 flex items-center gap-1">
+            <span>Community</span>
+            <span class="bg-amber-400 text-stone-950 px-1 rounded-full text-[8px] font-black">${clusterIndex + 1}/${clusterCount}</span>
+          </div>`
+        : `<div class="mt-0.5 bg-purple-950/90 text-white text-[9px] font-bold px-1.5 py-0.2 rounded shadow-xs whitespace-nowrap pointer-events-none">
+            Community
+          </div>`;
 
       const markerHtml = `
         <div class="relative cursor-pointer flex flex-col items-center justify-center transition-transform hover:scale-110">
@@ -1858,9 +1948,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
             <span style="font-size: 14px; line-height: 1;">🌸</span>
           </div>
           <div style="border-top-color: ${isSelected ? '#9333ea' : '#7e22ce'};" class="w-0 h-0 border-x-4 border-x-transparent border-t-[7px] -mt-0.5"></div>
-          <div class="mt-0.5 bg-purple-950/90 text-white text-[9px] font-bold px-1.5 py-0.2 rounded shadow-xs whitespace-nowrap pointer-events-none">
-            Community
-          </div>
+          ${badgeHtml}
         </div>
       `;
 
@@ -1868,14 +1956,39 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
         className: 'community-obs-pin',
         html: markerHtml,
         iconSize: [44, 52],
-        iconAnchor: [22, 42],
-        popupAnchor: [0, -38],
+        iconAnchor: [anchorX, anchorY],
+        popupAnchor: [popupOffsetX, popupOffsetY],
       });
 
       const marker = L.marker([obs.coordinates.lat, obs.coordinates.lng], {
         icon: customIcon,
+        zIndexOffset: isSelected ? 500 : clusterCount > 1 ? 100 + clusterIndex * 10 : 0,
         title: `Community Observation: ${obs.commonName}`,
       });
+
+      marker.on('mouseover', () => marker.setZIndexOffset(1000));
+      marker.on('mouseout', () => marker.setZIndexOffset(isSelected ? 500 : clusterCount > 1 ? 100 + clusterIndex * 10 : 0));
+
+      const switcherHtml = clusterCount > 1
+        ? `
+          <div class="mt-2.5 pt-2 border-t border-purple-200/90 bg-purple-50/90 -mx-3 -mb-3 p-2.5 rounded-b-lg">
+            <div class="text-[10.5px] font-bold text-purple-950 mb-1.5 flex items-center justify-between">
+              <span class="flex items-center gap-1">📍 <span>${clusterCount} community observations here:</span></span>
+              <span class="text-[9.5px] text-purple-700 font-mono">3–5m nearby</span>
+            </div>
+            <div class="flex gap-1.5 overflow-x-auto pb-0.5">
+              ${coLocated.map((o, idx) => {
+                const isCurr = o.id === obs.id;
+                const oName = escapeHtml(o.commonName || `Obs #${idx + 1}`);
+                if (isCurr) {
+                  return `<span class="px-2 py-1 text-[11px] font-bold bg-purple-800 text-white rounded-md whitespace-nowrap shadow-xs">✓ #${idx + 1} ${oName}</span>`;
+                }
+                return `<button type="button" onclick="window.wimpSelectCommunityObs && window.wimpSelectCommunityObs('${o.id}')" class="px-2 py-1 text-[11px] font-semibold bg-white hover:bg-purple-100 active:scale-95 text-purple-900 border border-purple-300 rounded-md whitespace-nowrap transition-all cursor-pointer shadow-2xs">#${idx + 1} ${oName}</button>`;
+              }).join('')}
+            </div>
+          </div>
+        `
+        : '';
 
       const popupHtml = `
         <div style="font-family: inherit; width: 280px;" class="p-3 text-stone-900">
@@ -1933,8 +2046,9 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
             onclick="window.wimpStartNav && window.wimpStartNav(${obs.coordinates.lat}, ${obs.coordinates.lng}, '${(obs.commonName || 'Community Observation').replace(/'/g, "\\'")}')"
             class="w-full py-1.5 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
           >
-            <span>🧭 Start Now (Route)</span>
+            <span>🧭 Start Navigation</span>
           </button>
+          ${switcherHtml}
         </div>
       `;
 
@@ -1972,11 +2086,55 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
       return coords !== null;
     });
 
+    // Detect co-located observations within ~10 meters (preserving exact coords and doc IDs)
+    const clusterMap = new Map<string, Plant[]>();
+    userPlants.forEach((p1) => {
+      const c1 = getValidPlantCoordinates(p1)!;
+      const coLocated = userPlants.filter((p2) => {
+        const c2 = getValidPlantCoordinates(p2);
+        if (!c2) return false;
+        return getHaversineDistanceMeters(c1.lat, c1.lng, c2.lat, c2.lng) <= 10;
+      });
+      clusterMap.set(p1.id, coLocated);
+    });
+
     userPlants.forEach((plant) => {
       const coords = getValidPlantCoordinates(plant);
       if (!coords) return;
 
       const isSelected = activeItem?.type === 'plant' && activeItem.plant?.id === plant.id;
+      const coLocated = clusterMap.get(plant.id) || [plant];
+      const clusterCount = coLocated.length;
+      const clusterIndex = coLocated.findIndex((p) => p.id === plant.id);
+
+      // Micro-offset display anchor when multiple pins are at the same spot so both remain individually tappable
+      let anchorX = 22;
+      let anchorY = 42;
+      let popupOffsetX = 0;
+      let popupOffsetY = -38;
+
+      if (clusterCount === 2) {
+        const shiftX = clusterIndex === 0 ? -15 : 15;
+        anchorX = 22 - shiftX;
+        popupOffsetX = shiftX;
+      } else if (clusterCount > 2) {
+        const angle = (clusterIndex / clusterCount) * 2 * Math.PI;
+        const shiftX = Math.round(16 * Math.sin(angle));
+        const shiftY = Math.round(10 * Math.cos(angle));
+        anchorX = 22 - shiftX;
+        anchorY = 42 - shiftY;
+        popupOffsetX = shiftX;
+        popupOffsetY = -38 + shiftY;
+      }
+
+      const badgeHtml = clusterCount > 1
+        ? `<div class="mt-0.5 bg-teal-950 text-white font-bold text-[9px] px-1.5 py-0.2 rounded shadow-xs whitespace-nowrap pointer-events-none border border-teal-400 flex items-center gap-1">
+            <span>User Flora</span>
+            <span class="bg-amber-400 text-stone-950 px-1 rounded-full text-[8px] font-black">${clusterIndex + 1}/${clusterCount}</span>
+          </div>`
+        : `<div class="mt-0.5 bg-teal-950/90 text-white font-bold text-[9px] px-1.5 py-0.2 rounded shadow-xs whitespace-nowrap pointer-events-none border border-teal-500/40">
+            User Flora
+          </div>`;
 
       const markerHtml = `
         <div class="relative cursor-pointer flex flex-col items-center justify-center transition-transform hover:scale-115">
@@ -1986,9 +2144,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
             <span style="font-size: 15px; line-height: 1;">🌱</span>
           </div>
           <div style="border-top-color: ${isSelected ? '#0f766e' : '#0d9488'};" class="w-0 h-0 border-x-4 border-x-transparent border-t-[7px] -mt-0.5"></div>
-          <div class="mt-0.5 bg-teal-950/90 text-white font-bold text-[9px] px-1.5 py-0.2 rounded shadow-xs whitespace-nowrap pointer-events-none border border-teal-500/40">
-            User Flora
-          </div>
+          ${badgeHtml}
         </div>
       `;
 
@@ -1996,14 +2152,18 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
         className: 'user-plant-pin',
         html: markerHtml,
         iconSize: [44, 52],
-        iconAnchor: [22, 42],
-        popupAnchor: [0, -38],
+        iconAnchor: [anchorX, anchorY],
+        popupAnchor: [popupOffsetX, popupOffsetY],
       });
 
       const marker = L.marker([coords.lat, coords.lng], {
         icon: customIcon,
+        zIndexOffset: isSelected ? 500 : clusterCount > 1 ? 100 + clusterIndex * 10 : 0,
         title: `User Plant Record: ${plant.commonName || 'Plant'}`,
       });
+
+      marker.on('mouseover', () => marker.setZIndexOffset(1000));
+      marker.on('mouseout', () => marker.setZIndexOffset(isSelected ? 500 : clusterCount > 1 ? 100 + clusterIndex * 10 : 0));
 
       const safeCommonName = escapeHtml(plant.commonName || 'Plant Record');
       const safeScientificName = plant.scientificName ? escapeHtml(plant.scientificName) : '';
@@ -2012,6 +2172,27 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
       const safeUsername = plant.ownerUsername ? escapeHtml(plant.ownerUsername) : '';
       const safeCategory = plant.category ? escapeHtml(plant.category) : '';
       const safeNavName = (plant.commonName || 'Plant Record').replace(/'/g, "\\'");
+
+      const switcherHtml = clusterCount > 1
+        ? `
+          <div class="mt-2.5 pt-2 border-t border-teal-200/90 bg-teal-50/90 -mx-3 -mb-3 p-2.5 rounded-b-lg">
+            <div class="text-[10.5px] font-bold text-teal-950 mb-1.5 flex items-center justify-between">
+              <span class="flex items-center gap-1">📍 <span>${clusterCount} plant observations at this spot:</span></span>
+              <span class="text-[9.5px] text-teal-700 font-mono">3–5m nearby</span>
+            </div>
+            <div class="flex gap-1.5 overflow-x-auto pb-0.5">
+              ${coLocated.map((p, idx) => {
+                const isCurr = p.id === plant.id;
+                const pName = escapeHtml(p.commonName || `Plant #${idx + 1}`);
+                if (isCurr) {
+                  return `<span class="px-2 py-1 text-[11px] font-bold bg-teal-800 text-white rounded-md whitespace-nowrap shadow-xs">✓ #${idx + 1} ${pName}</span>`;
+                }
+                return `<button type="button" onclick="window.wimpSelectUserPlant && window.wimpSelectUserPlant('${p.id}')" class="px-2 py-1 text-[11px] font-semibold bg-white hover:bg-teal-100 active:scale-95 text-teal-900 border border-teal-300 rounded-md whitespace-nowrap transition-all cursor-pointer shadow-2xs">#${idx + 1} ${pName}</button>`;
+              }).join('')}
+            </div>
+          </div>
+        `
+        : '';
 
       const popupHtml = `
         <div style="font-family: inherit; width: 280px;" class="p-3 text-stone-900">
@@ -2086,8 +2267,9 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
             onclick="window.wimpStartNav && window.wimpStartNav(${coords.lat}, ${coords.lng}, '${safeNavName}')"
             class="w-full py-1.5 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
           >
-            <span>🧭 Start Road Navigation</span>
+            <span>🧭 Start Navigation</span>
           </button>
+          ${switcherHtml}
         </div>
       `;
 
@@ -2474,7 +2656,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
           onclick="window.wimpStartNav && window.wimpStartNav(${targetCoordinates.lat}, ${targetCoordinates.lng}, '${safeCommonName}')"
           class="w-full mb-1.5 py-1.5 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
         >
-          <span>🧭 Start Now (Route)</span>
+          <span>🧭 Start Navigation</span>
         </button>
       </div>
     `;
@@ -2545,7 +2727,7 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
     return `${hours} hr ${remMins} min`;
   };
 
-  // Road Route Navigation Handler using OSRM
+  // Walking Route & Direct Sightline Navigation Handler
   const fetchAndDrawRoute = useCallback(async (
     start: Coordinates,
     destination: Coordinates,
@@ -2555,52 +2737,91 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
     setIsCalculatingRoute(true);
     setRouteError(null);
 
+    let routeData: {
+      routeType: 'walking' | 'direct-sightline';
+      distanceMeters: number;
+      durationSeconds: number;
+      coordinates: [number, number][];
+      bearing?: { degrees: number; cardinal: string };
+    } | null = null;
+
     try {
-      // Calculate real road-following route via OSRM public API
-      const url = `https://router.project-osrm.org/route/v1/driving/${start.lng},${start.lat};${destination.lng},${destination.lat}?overview=full&geometries=geojson`;
-      const res = await fetch(url);
-      if (!res.ok) {
-        throw new Error(`Routing service responded with status ${res.status}`);
+      // 1. Mandatory pedestrian-first routing via OSRM foot profile (7-second timeout)
+      const footUrl = `https://router.project-osrm.org/route/v1/foot/${start.lng},${start.lat};${destination.lng},${destination.lat}?overview=full&geometries=geojson`;
+      const res = await fetch(footUrl, { signal: AbortSignal.timeout(7000) });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+          const primaryRoute = data.routes[0];
+          const rawCoordinates = primaryRoute.geometry?.coordinates;
+          if (rawCoordinates && rawCoordinates.length > 0) {
+            // GeoJSON is [lng, lat] -> Leaflet requires [lat, lng]
+            const latlngs: [number, number][] = rawCoordinates.map(
+              ([lng, lat]: [number, number]) => [lat, lng]
+            );
+            routeData = {
+              routeType: 'walking',
+              distanceMeters: Math.round(primaryRoute.distance),
+              durationSeconds: Math.round(primaryRoute.duration),
+              coordinates: latlngs,
+            };
+          }
+        }
       }
+    } catch (err: any) {
+      console.warn('[ExploreMap] Pedestrian routing unavailable or timed out:', err);
+    }
 
-      const data = await res.json();
-      if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) {
-        throw new Error(data.message || 'No road route found to this location.');
-      }
+    // 2. If pedestrian routing returns no mapped route, off-road, or fails:
+    // Activate direct sightline fallback (never claim it is a verified road or trail)
+    if (!routeData) {
+      const straightLineDistMeters = Math.round(calculateDistanceKm(start, destination) * 1000);
+      const bearing = calculateBearing(start, destination);
+      // Standard pedestrian walking speed ~1.25 m/s (~4.5 km/h)
+      const estimatedDurationSeconds = Math.max(0, Math.round(straightLineDistMeters / 1.25));
 
-      const primaryRoute = data.routes[0];
-      const rawCoordinates = primaryRoute.geometry?.coordinates;
-      if (!rawCoordinates || rawCoordinates.length === 0) {
-        throw new Error('Route geometry unavailable.');
-      }
-
-      // GeoJSON is [lng, lat] -> Leaflet requires [lat, lng]
-      const latlngs: [number, number][] = rawCoordinates.map(
-        ([lng, lat]: [number, number]) => [lat, lng]
-      );
-
-      const routeInfo = {
-        destinationName: destName,
-        destinationCoords: destination,
-        distanceMeters: primaryRoute.distance,
-        durationSeconds: primaryRoute.duration,
-        coordinates: latlngs,
-        originalDistanceMeters: primaryRoute.distance,
-        originalDurationSeconds: primaryRoute.duration,
+      routeData = {
+        routeType: 'direct-sightline',
+        distanceMeters: straightLineDistMeters,
+        durationSeconds: estimatedDurationSeconds,
+        coordinates: [
+          [start.lat, start.lng],
+          [destination.lat, destination.lng],
+        ],
+        bearing,
       };
 
-      setActiveRoute(routeInfo);
-      activeRouteRef.current = routeInfo;
-      isNavigatingRef.current = true;
+      if (!isAutoReroute) {
+        setRouteError('No mapped walking path found to this location. Following direct compass sightline.');
+      }
+    }
 
-      // Render road line in vibrant Blue on Leaflet map
-      const map = mapInstanceRef.current;
-      const routeGroup = routeLayerRef.current;
-      if (map && routeGroup) {
-        routeGroup.clearLayers();
+    const routeInfo = {
+      destinationName: destName,
+      destinationCoords: destination,
+      distanceMeters: routeData.distanceMeters,
+      durationSeconds: routeData.durationSeconds,
+      coordinates: routeData.coordinates,
+      originalDistanceMeters: routeData.distanceMeters,
+      originalDurationSeconds: routeData.durationSeconds,
+      routeType: routeData.routeType,
+      bearing: routeData.bearing,
+    };
 
+    setActiveRoute(routeInfo);
+    activeRouteRef.current = routeInfo;
+    isNavigatingRef.current = true;
+
+    // Render route or sightline on Leaflet map
+    const map = mapInstanceRef.current;
+    const routeGroup = routeLayerRef.current;
+    if (map && routeGroup) {
+      routeGroup.clearLayers();
+
+      if (routeData.routeType === 'walking') {
         // High contrast casing
-        const casingLine = L.polyline(latlngs, {
+        const casingLine = L.polyline(routeData.coordinates, {
           color: '#1d4ed8',
           weight: 8,
           opacity: 0.35,
@@ -2608,9 +2829,9 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
           lineJoin: 'round',
         });
 
-        // Vibrant Blue primary road line
-        const blueLine = L.polyline(latlngs, {
-          color: '#2563eb', // Vibrant Blue
+        // Vibrant Blue primary walking path line
+        const blueLine = L.polyline(routeData.coordinates, {
+          color: '#2563eb',
           weight: 5,
           opacity: 0.95,
           lineCap: 'round',
@@ -2620,20 +2841,37 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
         routeGroup.addLayer(casingLine);
         routeGroup.addLayer(blueLine);
 
-        // On initial navigation start, fit bounds to display entire route.
-        // On auto-reroute, keep the map smoothly following user GPS.
         if (!isAutoReroute) {
           map.fitBounds(blueLine.getBounds(), { padding: [50, 50], maxZoom: 16 });
         }
+      } else {
+        // Direct Sightline Fallback:
+        // Stylized dashed amber line (clearly distinct from real road lines)
+        const casingLine = L.polyline(routeData.coordinates, {
+          color: '#78350f',
+          weight: 6,
+          opacity: 0.35,
+          dashArray: '8, 8',
+        });
+
+        const sightLine = L.polyline(routeData.coordinates, {
+          color: '#f59e0b',
+          weight: 4,
+          opacity: 0.95,
+          dashArray: '8, 8',
+          lineCap: 'round',
+        });
+
+        routeGroup.addLayer(casingLine);
+        routeGroup.addLayer(sightLine);
+
+        if (!isAutoReroute) {
+          map.fitBounds(sightLine.getBounds(), { padding: [50, 50], maxZoom: 16 });
+        }
       }
-    } catch (err: any) {
-      console.warn('[ExploreMap] Routing error:', err);
-      if (!isAutoReroute) {
-        setRouteError(err.message || 'Could not calculate road route.');
-      }
-    } finally {
-      setIsCalculatingRoute(false);
     }
+
+    setIsCalculatingRoute(false);
   }, []);
 
   fetchAndDrawRouteRef.current = fetchAndDrawRoute;
@@ -3704,32 +3942,54 @@ export const ExploreMap: React.FC<ExploreMapProps> = ({
               </button>
             </div>
 
-            {/* Active Road Route HUD Overlay (Compact on mobile, full on desktop) */}
+            {/* Active Walking Route / Direct Sightline HUD Overlay (Compact on mobile, full on desktop) */}
             {activeRoute && (
-              <div className="absolute top-12 sm:top-14 left-2 right-2 sm:left-auto sm:right-3 sm:max-w-xs md:max-w-sm z-[1000] bg-blue-900/95 backdrop-blur-md text-white px-2 py-1 sm:px-3 sm:py-2 rounded-lg sm:rounded-xl shadow-lg border border-blue-400/30 flex items-center justify-between gap-1.5 sm:gap-2 animate-in slide-in-from-top-2 pointer-events-auto">
+              <div className={`absolute top-12 sm:top-14 left-2 right-2 sm:left-auto sm:right-3 sm:max-w-xs md:max-w-sm z-[1000] ${
+                activeRoute.routeType === 'direct-sightline' ? 'bg-amber-950/95 border-amber-400/40' : 'bg-blue-900/95 border-blue-400/30'
+              } backdrop-blur-md text-white px-2 py-1 sm:px-3 sm:py-2 rounded-lg sm:rounded-xl shadow-lg border flex items-center justify-between gap-1.5 sm:gap-2 animate-in slide-in-from-top-2 pointer-events-auto`}>
                 <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
-                  <div className="hidden sm:flex w-7 h-7 rounded-lg bg-blue-600 items-center justify-center shrink-0 shadow-inner">
-                    <Navigation className="w-4 h-4 text-white animate-pulse" />
+                  <div className={`hidden sm:flex w-7 h-7 rounded-lg ${
+                    activeRoute.routeType === 'direct-sightline' ? 'bg-amber-600' : 'bg-blue-600'
+                  } items-center justify-center shrink-0 shadow-inner`}>
+                    {activeRoute.routeType === 'direct-sightline' ? (
+                      <Compass className="w-4 h-4 text-white animate-pulse" />
+                    ) : (
+                      <Navigation className="w-4 h-4 text-white animate-pulse" />
+                    )}
                   </div>
                   <div className="min-w-0">
                     <div className="flex items-center gap-1 sm:gap-1.5 leading-none">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0 animate-ping" />
-                      <span className="text-[8.5px] sm:text-[9px] uppercase font-bold text-blue-200 tracking-wider whitespace-nowrap">
-                        {isReroutingUI ? 'Recalculating...' : 'Live Nav'}
+                      <span className={`w-1.5 h-1.5 rounded-full ${
+                        activeRoute.routeType === 'direct-sightline' ? 'bg-amber-400' : 'bg-emerald-400'
+                      } shrink-0 animate-ping`} />
+                      <span className={`text-[8.5px] sm:text-[9px] uppercase font-bold ${
+                        activeRoute.routeType === 'direct-sightline' ? 'text-amber-200' : 'text-blue-200'
+                      } tracking-wider whitespace-nowrap`}>
+                        {isReroutingUI
+                          ? 'Recalculating...'
+                          : activeRoute.routeType === 'direct-sightline'
+                          ? 'Direct Sightline'
+                          : 'Walking Route'}
                       </span>
-                      <span className="text-blue-300/60 hidden sm:inline">•</span>
+                      <span className="text-white/40 hidden sm:inline">•</span>
                       <span className="text-[10px] sm:text-xs font-bold truncate text-white leading-tight max-w-[110px] xs:max-w-[150px] sm:max-w-[170px]">
                         To: {activeRoute.destinationName}
                       </span>
                     </div>
-                    <div className="text-[9.5px] sm:text-[11px] text-blue-100 flex items-center gap-1 sm:gap-1.5 leading-tight mt-0.5">
+                    <div className="text-[9.5px] sm:text-[11px] text-stone-100 flex items-center gap-1 sm:gap-1.5 leading-tight mt-0.5">
                       <span className="font-semibold text-white whitespace-nowrap">
-                        📍 {formatRouteDistance(activeRoute.distanceMeters)}
+                        📍 {formatRouteDistance(activeRoute.distanceMeters)} {activeRoute.routeType === 'direct-sightline' ? '(Straight-line)' : ''}
                       </span>
                       <span>•</span>
-                      <span className="font-semibold text-white whitespace-nowrap">
-                        ⏱️ {formatRouteDuration(activeRoute.durationSeconds)}
-                      </span>
+                      {activeRoute.bearing ? (
+                        <span className="font-semibold text-amber-200 whitespace-nowrap">
+                          🧭 {activeRoute.bearing.degrees}° {activeRoute.bearing.cardinal}
+                        </span>
+                      ) : (
+                        <span className="font-semibold text-white whitespace-nowrap">
+                          ⏱️ {formatRouteDuration(activeRoute.durationSeconds)}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
