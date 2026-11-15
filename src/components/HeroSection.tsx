@@ -175,6 +175,9 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
               <div className="relative aspect-[4/3] rounded-2xl overflow-hidden bg-stone-100">
                 <img
                   src={heroImg}
+                  fetchPriority="high"
+                  width="1200"
+                  height="800"
                   alt="Lush botanical greenhouse with ferns and botanical field study workspace"
                   className="w-full h-full object-cover transform hover:scale-105 transition-transform duration-700"
                   referrerPolicy="no-referrer"

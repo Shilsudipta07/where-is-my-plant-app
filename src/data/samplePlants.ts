@@ -1,10 +1,10 @@
 import { Plant } from '../types/plant';
 
 // Botanical imagery references
-import monsteraImg from '../assets/images/plant_monstera_deliciosa_1790167096323.jpg';
-import lavenderImg from '../assets/images/plant_lavender_wildflower_1790167109212.jpg';
-import birchImg from '../assets/images/plant_silver_birch_1790167120202.jpg';
-import heroImg from '../assets/images/hero_botanical_banner_1790167082397.jpg';
+const monsteraImg = '/assets/plants/plant_monstera_deliciosa_1790167096323.webp';
+const lavenderImg = '/assets/plants/plant_lavender_wildflower_1790167109212.webp';
+const birchImg = '/assets/plants/plant_silver_birch_1790167120202.webp';
+const heroImg = '/assets/plants/hero_botanical_banner_1790167082397.webp';
 
 export { heroImg, monsteraImg, lavenderImg, birchImg };
 

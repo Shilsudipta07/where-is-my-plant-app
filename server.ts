@@ -5,6 +5,8 @@ dns.setDefaultResultOrder('ipv4first');
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import { existsSync } from 'node:fs';
+import { staticHosting } from './scripts/static-hosting';
 
 // Calculate Haversine distance in meters
 function calculateDistanceMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -363,13 +365,13 @@ async function startServer() {
   });
 
   // Dedicated route for sitemap.xml ensuring valid XML Content-Type and HTTP 200
-  app.get('/sitemap.xml', (_req, res) => {
+  app.get(['/sitemap.xml', '/plant-sitemap.xml'], (_req, res) => {
     const sitemapDist = path.resolve(process.cwd(), 'dist', 'sitemap.xml');
     const sitemapPublic = path.resolve(process.cwd(), 'public', 'sitemap.xml');
-    const targetFile = process.env.NODE_ENV === 'production' ? sitemapDist : sitemapPublic;
+    const targetFile = process.env.NODE_ENV === 'production' || existsSync(sitemapDist) ? sitemapDist : sitemapPublic;
 
     res.setHeader('Content-Type', 'application/xml; charset=utf-8');
-    res.setHeader('Cache-Control', 'public, max-age=3600, s-maxage=3600');
+    res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate');
     res.setHeader('X-Content-Type-Options', 'nosniff');
 
     res.sendFile(targetFile, (err) => {
@@ -410,10 +412,7 @@ async function startServer() {
   });
 
   if (process.env.NODE_ENV === 'production') {
-    app.use(express.static(path.resolve(process.cwd(), 'dist')));
-    app.get('*', (req, res) => {
-      res.sendFile(path.resolve(process.cwd(), 'dist', 'index.html'));
-    });
+    app.use(staticHosting());
   } else {
     const vite = await createViteServer({
       server: { middlewareMode: true },

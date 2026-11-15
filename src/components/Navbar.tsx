@@ -18,6 +18,7 @@ import {
   TreeDeciduous,
 } from 'lucide-react';
 import { subscribeToAuth, AuthState, getCurrentUid } from '../services/authService';
+import { routePath } from '../utils/routes';
 
 interface NavbarProps {
   activeTab: ActiveTab;
@@ -220,9 +221,14 @@ export const Navbar: React.FC<NavbarProps> = ({
               const active = isItemActive(item.id);
               const Icon = item.icon;
               return (
-                <button
+                <a
                   key={item.id}
-                  onClick={() => handleNavClick(item.id)}
+                  href={routePath(item.id === 'near-me' ? 'map' : item.id)}
+                  onClick={(event) => {
+                    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+                    event.preventDefault();
+                    handleNavClick(item.id);
+                  }}
                   className={`relative px-2.5 py-1.5 rounded-lg transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
                     active
                       ? 'bg-emerald-900/10 text-emerald-950 font-semibold'
@@ -239,7 +245,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   {active && (
                     <span className="absolute bottom-0 left-2.5 right-2.5 h-0.5 bg-emerald-800 rounded-full" />
                   )}
-                </button>
+                </a>
               );
             })}
           </nav>
@@ -253,9 +259,14 @@ export const Navbar: React.FC<NavbarProps> = ({
               const active = isItemActive(item.id);
               const Icon = item.icon;
               return (
-                <button
+                <a
                   key={item.id}
-                  onClick={() => handleNavClick(item.id)}
+                  href={routePath(item.id === 'near-me' ? 'map' : item.id)}
+                  onClick={(event) => {
+                    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+                    event.preventDefault();
+                    handleNavClick(item.id);
+                  }}
                   title={item.label}
                   className={`relative px-2 py-1.5 rounded-lg transition-all cursor-pointer whitespace-nowrap flex items-center gap-1 ${
                     active
@@ -273,7 +284,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   {active && (
                     <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-emerald-800 rounded-full" />
                   )}
-                </button>
+                </a>
               );
             })}
           </nav>
@@ -418,9 +429,14 @@ export const Navbar: React.FC<NavbarProps> = ({
               const active = isItemActive(item.id);
               const Icon = item.icon;
               return (
-                <button
+                <a
                   key={item.id}
-                  onClick={() => handleNavClick(item.id)}
+                  href={routePath(item.id === 'near-me' ? 'map' : item.id)}
+                  onClick={(event) => {
+                    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+                    event.preventDefault();
+                    handleNavClick(item.id);
+                  }}
                   className={`w-full text-left px-3.5 py-3 rounded-2xl text-xs font-medium transition-all cursor-pointer flex items-center justify-between ${
                     active
                       ? 'bg-emerald-50 text-emerald-950 font-bold border-l-4 border-emerald-800 shadow-2xs'
@@ -456,7 +472,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       className={`w-4 h-4 ${active ? 'text-emerald-800' : 'text-stone-300'}`}
                     />
                   </div>
-                </button>
+                </a>
               );
             })}
           </div>

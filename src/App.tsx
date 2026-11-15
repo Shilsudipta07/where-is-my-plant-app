@@ -3,33 +3,37 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { Plant, ActiveTab, Coordinates } from './types/plant';
 import { INITIAL_PLANTS, DEMO_CAMPUS_CENTER } from './data/samplePlants';
 import { Navbar } from './components/Navbar';
 import { HeroSection } from './components/HeroSection';
-import { ExploreMap } from './components/ExploreMap';
+import { LazyExploreMap as ExploreMap, DeferredExploreMap } from './components/DeferredExploreMap';
 import { PlantCatalog } from './components/PlantCatalog';
-import { PlantDetailModal } from './components/PlantDetailModal';
-import { AddPlantModal } from './components/AddPlantModal';
-import { AboutView } from './components/AboutView';
-import { SearchResultsView } from './components/SearchResultsView';
-import { IdentifyPlantPage } from './components/IdentifyPlantPage';
-import { SubmitPlantPage } from './components/SubmitPlantPage';
-import { PlantDetailsPage } from './components/PlantDetailsPage';
-import { CarbonDashboard } from './components/CarbonDashboard';
-import { AccountView } from './components/AccountView';
 import { Footer } from './components/Footer';
-import { HowToSubmitModal } from './components/HowToSubmitModal';
 import { getPlantsFromFirestore } from './services/firestoreService';
 import { PlantOccurrenceRecord, SpeciesResolutionResult } from './services/gbifService';
 import { INaturalistObservationRecord, INaturalistTaxon, CommunityObservation } from './types/plant';
 import { Sparkles, ArrowRight, Compass, Plus, Check, ArrowLeft, Camera, BookOpen } from 'lucide-react';
+import { readRoute, routePath } from './utils/routes';
+import { applyPageSeo, getPageSeo } from './utils/seo';
 
 const STORAGE_KEY = 'where_is_my_plant_items_v2';
+const AboutView = lazy(() => import('./components/AboutView').then(m => ({ default: m.AboutView })));
+const SearchResultsView = lazy(() => import('./components/SearchResultsView').then(m => ({ default: m.SearchResultsView })));
+const IdentifyPlantPage = lazy(() => import('./components/IdentifyPlantPage').then(m => ({ default: m.IdentifyPlantPage })));
+const SubmitPlantPage = lazy(() => import('./components/SubmitPlantPage').then(m => ({ default: m.SubmitPlantPage })));
+const PlantDetailsPage = lazy(() => import('./components/PlantDetailsPage').then(m => ({ default: m.PlantDetailsPage })));
+const CarbonDashboard = lazy(() => import('./components/CarbonDashboard').then(m => ({ default: m.CarbonDashboard })));
+const AccountView = lazy(() => import('./components/AccountView').then(m => ({ default: m.AccountView })));
+const PlantDetailModal = lazy(() => import('./components/PlantDetailModal').then(m => ({ default: m.PlantDetailModal })));
+const AddPlantModal = lazy(() => import('./components/AddPlantModal').then(m => ({ default: m.AddPlantModal })));
+const HowToSubmitModal = lazy(() => import('./components/HowToSubmitModal').then(m => ({ default: m.HowToSubmitModal })));
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<ActiveTab>('home');
+  const [activeTab, updateActiveTab] = useState<ActiveTab>(() => readRoute(window.location.pathname).tab);
+  const [isNotFound, setIsNotFound] = useState(() => !readRoute(window.location.pathname).isValid);
+  const [isLoadingPlants, setIsLoadingPlants] = useState(true);
   const [isNearMeActive, setIsNearMeActive] = useState<boolean>(false);
   const [isHowToSubmitOpen, setIsHowToSubmitOpen] = useState<boolean>(false);
   const [plants, setPlants] = useState<Plant[]>(() => {
@@ -38,23 +42,39 @@ export default function App() {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+          const combined = new Map<string, Plant>(INITIAL_PLANTS.map(plant => [plant.id, plant]));
+          parsed.forEach((plant: Plant) => {
+            const builtIn = INITIAL_PLANTS.find(item => item.id === plant.id);
+            combined.set(plant.id, builtIn && !plant.isUserAdded ? { ...plant, imageUrl: builtIn.imageUrl } : plant);
+          });
+          const seed = document.getElementById('page-plant')?.textContent;
+          if (seed) { const plant = JSON.parse(seed) as Plant; combined.set(plant.id, plant); }
+          return [...combined.values()];
         }
       }
     } catch (e) {
       console.warn('[App] Could not load saved plants from localStorage:', e);
     }
+    try {
+      const seed = document.getElementById('page-plant')?.textContent;
+      if (seed) { const plant = JSON.parse(seed) as Plant; return [...INITIAL_PLANTS.filter(item => item.id !== plant.id), plant]; }
+    } catch { /* Ignore invalid page seed and use the built-in catalog. */ }
     return INITIAL_PLANTS;
   });
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedPlantModal, setSelectedPlantModal] = useState<Plant | null>(null);
-  const [selectedPlantDetails, setSelectedPlantDetails] = useState<Plant | null>(null);
+  const [selectedPlantDetails, setSelectedPlantDetails] = useState<Plant | null>(() => {
+    const { plantId } = readRoute(window.location.pathname);
+    return plants.find((plant) => plant.id === plantId) || null;
+  });
   const [selectedMapPlant, setSelectedMapPlant] = useState<Plant | null>(null);
   const [userLocation, setUserLocation] = useState<Coordinates | null>(null);
   const [isLocating, setIsLocating] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [hasLoadedAddModal, setHasLoadedAddModal] = useState(false);
+  const [hasLoadedHowToModal, setHasLoadedHowToModal] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [selectedCommunityObservation, setSelectedCommunityObservation] = useState<CommunityObservation | null>(null);
 
@@ -67,6 +87,43 @@ export default function App() {
   const [activeGbifSearch, setActiveGbifSearch] = useState<string>('');
   const [activeGbifSpecies, setActiveGbifSpecies] = useState<SpeciesResolutionResult | null>(null);
   const [activeGbifRecords, setActiveGbifRecords] = useState<PlantOccurrenceRecord[]>([]);
+
+  useEffect(() => {
+    if (isAddModalOpen) setHasLoadedAddModal(true);
+    if (isHowToSubmitOpen) setHasLoadedHowToModal(true);
+  }, [isAddModalOpen, isHowToSubmitOpen]);
+
+  const setActiveTab = (tab: ActiveTab, plantId?: string) => {
+    setIsNotFound(false);
+    const path = routePath(tab, plantId || selectedPlantDetails?.id);
+    if (window.location.pathname !== path) window.history.pushState(null, '', path);
+    updateActiveTab(tab);
+  };
+
+  useEffect(() => {
+    const restoreRoute = () => {
+      const route = readRoute(window.location.pathname);
+      updateActiveTab(route.tab);
+      setIsNotFound(!route.isValid);
+      setSelectedPlantDetails(plants.find((plant) => plant.id === route.plantId) || null);
+      setIsNearMeActive(false);
+    };
+    window.addEventListener('popstate', restoreRoute);
+    // Resolve direct links after saved observations finish loading.
+    const route = readRoute(window.location.pathname);
+    if (route.plantId) {
+      setSelectedPlantDetails(plants.find((plant) => plant.id === route.plantId) || null);
+    }
+    return () => window.removeEventListener('popstate', restoreRoute);
+  }, [plants]);
+
+  useEffect(() => {
+    const seo = getPageSeo(activeTab, selectedPlantDetails, window.location.pathname);
+    if (isNotFound) { seo.title = 'Page Not Found | WHERE IS MY PLANT'; seo.robots = 'noindex, follow'; }
+    // A Firestore record may still arrive; do not mark a loading page as missing.
+    if (activeTab === 'plant-details' && !selectedPlantDetails && isLoadingPlants) seo.robots = 'index, follow';
+    applyPageSeo(seo);
+  }, [activeTab, selectedPlantDetails, isNotFound, isLoadingPlants]);
 
   // Save to localStorage when plants state changes
   useEffect(() => {
@@ -94,7 +151,8 @@ export default function App() {
       })
       .catch((err) => {
         console.warn('[App] Could not fetch firestore plants:', err);
-      });
+      })
+      .finally(() => { if (!isCancelled) setIsLoadingPlants(false); });
 
     return () => {
       isCancelled = true;
@@ -165,7 +223,7 @@ export default function App() {
 
   const handleOpenPlantDetails = (plant: Plant) => {
     setSelectedPlantDetails(plant);
-    setActiveTab('plant-details');
+    setActiveTab('plant-details', plant.id);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -242,6 +300,8 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1">
+        <Suspense fallback={<p className="p-12 text-center" role="status">Loading page…</p>}>
+        {isNotFound ? <section className="max-w-7xl mx-auto p-12"><h1>Page not found</h1><a href="/">Back to Home</a></section> : <>
         {activeTab === 'home' && (
           <>
             {/* Required Homepage Hero */}
@@ -258,7 +318,7 @@ export default function App() {
             />
 
             {/* Required Homepage Explore Map Section */}
-            <ExploreMap
+            <DeferredExploreMap
               plants={plants}
               selectedPlant={selectedMapPlant}
               selectedPlantId={selectedMapPlant?.id}
@@ -487,6 +547,13 @@ export default function App() {
           </div>
         )}
 
+        {activeTab === 'plant-details' && !selectedPlantDetails && (
+          <div className="max-w-7xl mx-auto px-4 py-12">
+            <h1>{isLoadingPlants ? 'Loading plant record…' : 'Plant record unavailable'}</h1>
+            <button onClick={handleBackFromPlantDetails} className="mt-4 underline cursor-pointer">Back to Home</button>
+          </div>
+        )}
+
         {activeTab === 'plant-details' && selectedPlantDetails && (
           <div className="pt-2 animate-in fade-in duration-150">
             <PlantDetailsPage
@@ -563,10 +630,13 @@ export default function App() {
             />
           </div>
         )}
+        </>}
+        </Suspense>
       </main>
 
       {/* Plant Detail Dossier Modal */}
-      <PlantDetailModal
+      <Suspense fallback={null}>
+      {selectedPlantModal && <PlantDetailModal
         plant={selectedPlantModal}
         onClose={() => setSelectedPlantModal(null)}
         onShowOnMap={(plant) => {
@@ -574,24 +644,25 @@ export default function App() {
           handleShowOnMap(plant);
         }}
         userLocation={userLocation}
-      />
+      />}
 
       {/* Add Plant Sighting Modal */}
-      <AddPlantModal
+      {(isAddModalOpen || hasLoadedAddModal) && <AddPlantModal
         isOpen={isAddModalOpen}
         onClose={() => setIsAddModalOpen(false)}
         onAddPlant={handleAddPlant}
-      />
+      />}
 
       {/* How to Submit Instruction Guide Modal */}
-      <HowToSubmitModal
+      {(isHowToSubmitOpen || hasLoadedHowToModal) && <HowToSubmitModal
         isOpen={isHowToSubmitOpen}
         onClose={() => setIsHowToSubmitOpen(false)}
         onStartSubmit={() => {
           setIsHowToSubmitOpen(false);
           handleOpenAddPlant();
         }}
-      />
+      />}
+      </Suspense>
 
       {/* Global Footer */}
       <Footer

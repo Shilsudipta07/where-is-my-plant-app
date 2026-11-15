@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { Plant } from '../types/plant';
 import { X, Plus, Upload, CheckCircle, Sparkles, Loader2, AlertCircle, TreeDeciduous, Ruler, Calendar } from 'lucide-react';
-import lavenderImg from '../assets/images/plant_lavender_wildflower_1790167109212.jpg';
+import { lavenderImg } from '../data/samplePlants';
 import { addPlantToFirestore } from '../services/firestoreService';
 import { compressImageFile } from '../utils/imageUtils';
 import {

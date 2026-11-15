@@ -10,7 +10,7 @@ import {
   Loader2,
   AlertCircle,
 } from 'lucide-react';
-import lavenderImg from '../assets/images/plant_lavender_wildflower_1790167109212.jpg';
+import { lavenderImg } from '../data/samplePlants';
 import { DEMO_CAMPUS_CENTER } from '../data/samplePlants';
 import { addPlantToFirestore } from '../services/firestoreService';
 import { compressImageFile } from '../utils/imageUtils';

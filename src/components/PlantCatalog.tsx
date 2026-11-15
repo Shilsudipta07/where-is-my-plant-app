@@ -3,6 +3,7 @@ import { Plant, Coordinates } from '../types/plant';
 import { Search, MapPin, Eye, Sun, Droplets, BookOpen, AlertTriangle, Navigation } from 'lucide-react';
 import { formatDistance } from '../utils/geoUtils';
 import { DEMO_CAMPUS_CENTER } from '../data/samplePlants';
+import { routePath } from '../utils/routes';
 
 interface PlantCatalogProps {
   plants: Plant[];
@@ -149,6 +150,10 @@ export const PlantCatalog: React.FC<PlantCatalogProps> = ({
                 <img
                   src={plant.imageUrl}
                   alt={plant.commonName}
+                  loading="lazy"
+                  decoding="async"
+                  width="600"
+                  height="450"
                   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                   referrerPolicy="no-referrer"
                 />
@@ -163,7 +168,7 @@ export const PlantCatalog: React.FC<PlantCatalogProps> = ({
                 <div className="absolute top-2 right-2 bg-stone-900/85 backdrop-blur-md px-2 py-0.5 rounded text-[11px] font-medium text-white flex items-center gap-1 shadow-xs">
                   <Navigation className="w-2.5 h-2.5 text-emerald-400" />
                   <span>
-                    {userLocation
+                    {!plant.coordinates ? 'Location unavailable' : userLocation
                       ? formatDistance(userLocation, plant.coordinates)
                       : formatDistance(DEMO_CAMPUS_CENTER, plant.coordinates)}
                   </span>
@@ -193,7 +198,7 @@ export const PlantCatalog: React.FC<PlantCatalogProps> = ({
                     onClick={() => onSelectPlant(plant)}
                     className="font-serif-display text-lg font-bold text-stone-900 group-hover:text-emerald-900 transition-colors cursor-pointer leading-snug"
                   >
-                    {plant.commonName}
+                    <a href={routePath('plant-details', plant.id)} onClick={(event) => event.stopPropagation()}>{plant.commonName}</a>
                   </h3>
                   <div className="text-xs italic text-stone-500 mt-0.5 mb-2.5">
                     {plant.scientificName}

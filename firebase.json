@@ -11,6 +11,13 @@
     ],
     "headers": [
       {
+        "source": "/seo-history.json",
+        "headers": [
+          { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" },
+          { "key": "X-Robots-Tag", "value": "noindex" }
+        ]
+      },
+      {
         "source": "/plant-sitemap.xml",
         "headers": [
           {
@@ -50,11 +57,7 @@
         ]
       }
     ],
-    "rewrites": [
-      {
-        "source": "**",
-        "destination": "/index.html"
-      }
-    ]
+    "cleanUrls": true,
+    "trailingSlash": false
   }
 }
