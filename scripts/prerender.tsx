@@ -94,6 +94,7 @@ const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.s
 if (urls.length > 50000 || Buffer.byteLength(xml) > 50 * 1024 * 1024) throw new Error('Sitemap exceeds protocol limits; split it before deploying.');
 await writeFile('dist/sitemap.xml', xml);
 await writeFile('dist/plant-sitemap.xml', xml);
+await writeFile('dist/sitemap.txt', urls.map(({ url }) => url).join('\n') + '\n');
 const notFound = template.replace(/<title>[\s\S]*?<\/title>/, '<title>Page Not Found | WHERE IS MY PLANT</title>')
   .replace('</head>', '<meta name="robots" content="noindex, follow" /></head>')
   .replace(/<script type="module"[^>]*><\/script>/g, '')

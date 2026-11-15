@@ -72,6 +72,16 @@ test('built site serves prerendered public pages, metadata, assets, private page
     const xml = await readFile('dist/sitemap.xml', 'utf8');
     assert.equal(xml, await readFile('dist/plant-sitemap.xml', 'utf8'));
     const urls = [...xml.matchAll(/<loc>(.*?)<\/loc>/g)].map(match => match[1].replace(/&amp;/g, '&'));
+    const textResponse = await fetch(base + '/sitemap.txt');
+    assert.equal(textResponse.status, 200);
+    assert.ok(textResponse.headers.get('content-type')?.startsWith('text/plain'));
+    const textSitemap = await textResponse.text();
+    assert.deepEqual(textSitemap.trimEnd().split('\n'), urls);
+    assert.ok(!textSitemap.startsWith('\uFEFF'));
+    assert.ok(textSitemap.endsWith('\n'));
+    const robots = await (await fetch(base + '/robots.txt')).text();
+    assert.ok(robots.includes('Sitemap: ' + SITE_URL + '/sitemap.xml'));
+    assert.ok(robots.includes('Sitemap: ' + SITE_URL + '/sitemap.txt'));
     const history = validateHistory(JSON.parse(await readFile('dist/seo-history.json', 'utf8')));
     const lastmods = [...xml.matchAll(/<lastmod>(.*?)<\/lastmod>/g)].map(match => match[1]);
     assert.equal(lastmods.length, urls.length);

@@ -365,12 +365,13 @@ async function startServer() {
   });
 
   // Dedicated route for sitemap.xml ensuring valid XML Content-Type and HTTP 200
-  app.get(['/sitemap.xml', '/plant-sitemap.xml'], (_req, res) => {
-    const sitemapDist = path.resolve(process.cwd(), 'dist', 'sitemap.xml');
-    const sitemapPublic = path.resolve(process.cwd(), 'public', 'sitemap.xml');
+  app.get(['/sitemap.xml', '/plant-sitemap.xml', '/sitemap.txt'], (req, res) => {
+    const filename = req.path.endsWith('.txt') ? 'sitemap.txt' : 'sitemap.xml';
+    const sitemapDist = path.resolve(process.cwd(), 'dist', filename);
+    const sitemapPublic = path.resolve(process.cwd(), 'public', filename);
     const targetFile = process.env.NODE_ENV === 'production' || existsSync(sitemapDist) ? sitemapDist : sitemapPublic;
 
-    res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+    res.setHeader('Content-Type', filename.endsWith('.txt') ? 'text/plain; charset=utf-8' : 'application/xml; charset=utf-8');
     res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate');
     res.setHeader('X-Content-Type-Options', 'nosniff');
 
